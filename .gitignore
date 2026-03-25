@@ -1,5 +1,27 @@
 __pycache__/
 *.pyc
-.venv/
+*.pyo
 *.egg-info/
 dist/
+build/
+.venv/
+.eggs/
+*.so
+*.dylib
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+.DS_Store
