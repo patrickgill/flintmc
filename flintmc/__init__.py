@@ -1,4 +1,4 @@
-"""flint-mc — Python ARM Thumb-2 assembler backed by llvm-mc."""
+"""flintmc — Multi-architecture assembler backed by llvm-mc."""
 
 from .assembler import Assembler, AsmError, find_llvm_mc
 
