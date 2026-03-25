@@ -383,3 +383,33 @@ class TestThreadSafety:
         assert all(len(r) > 0 for r in results)
         # Cache should have entries
         assert a.cache_size > 0
+
+
+# ---------------------------------------------------------------------------
+# Ergonomics: __call__ and module-level asm()
+# ---------------------------------------------------------------------------
+
+class TestErgonomics:
+    def test_callable(self):
+        a = Assembler.cortex_m7_dp()
+        assert a("nop") == b"\x00\xbf"
+        assert a("nop") == a.asm("nop")
+
+    def test_module_level_asm_no_default(self):
+        import flintmc
+        saved = flintmc.default
+        try:
+            flintmc.default = None
+            with pytest.raises(RuntimeError, match="No default assembler"):
+                flintmc.asm("nop")
+        finally:
+            flintmc.default = saved
+
+    def test_module_level_asm_with_default(self):
+        import flintmc
+        saved = flintmc.default
+        try:
+            flintmc.default = Assembler.cortex_m7_dp()
+            assert flintmc.asm("nop") == b"\x00\xbf"
+        finally:
+            flintmc.default = saved

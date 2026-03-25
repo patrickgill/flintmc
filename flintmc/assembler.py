@@ -303,6 +303,10 @@ class Assembler:
             parts.append(self.cpu)
         return f"Assembler({', '.join(parts)})"
 
+    def __call__(self, source: str) -> bytes:
+        """Shorthand for ``asm(source)``."""
+        return self.asm(source)
+
     # -- ARM Cortex-M profiles ---------------------------------------------
 
     @classmethod
