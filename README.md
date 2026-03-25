@@ -6,21 +6,21 @@ Works for any target LLVM supports — x86, x86_64, ARM Thumb-2, AArch64, RISC-V
 
 Single subprocess call per assembly, ELF `.text` extraction in pure Python, no temp files, no native dependencies beyond LLVM itself.
 
-## Install
+```python
+from flintmc import Assembler
 
-```
-brew install llvm     # macOS
-apt install llvm      # Linux
-
-pip install flintmc   # or: uv add flintmc
+asm = Assembler.x86_64()
+asm.asm("mov rax, rbx; ret")     # b'\x48\x89\xd8\xc3'
 ```
 
-## Usage
+### Basic usage
+
+Pick a profile, call `asm()`:
 
 ```python
 from flintmc import Assembler
 
-# x86_64
+# x86_64 — Intel syntax by default
 x64 = Assembler.x86_64()
 x64.asm("mov rax, rbx; ret")     # b'\x48\x89\xd8\xc3'
 x64.asm("syscall")               # b'\x0f\x05'
@@ -29,33 +29,92 @@ x64.asm("syscall")               # b'\x0f\x05'
 x86 = Assembler.i686()
 x86.asm("int 0x80")              # b'\xcd\x80'
 
-# ARM Cortex-M7
-asm = Assembler.cortex_m7_dp()
-asm.asm("mrs r0, PRIMASK")       # b'\xef\xf3\x10\x80'
-asm.asm("vfma.f32 s0, s1, s2")   # b'\xa0\xee\x81\x0a'
+# ARM Cortex-M7 (double precision FPU)
+arm = Assembler.cortex_m7_dp()
+arm.asm("mrs r0, PRIMASK")       # b'\xef\xf3\x10\x80'
+arm.asm("vfma.f32 s0, s1, s2")   # b'\xa0\xee\x81\x0a'
 
 # AArch64
 a64 = Assembler.aarch64()
-a64.asm("ret")
+a64.asm("ret")                   # b'\xc0\x03\x5f\xd6'
 ```
 
-Multi-instruction assembly (semicolons or newlines), labels, literal pools, all standard assembler directives — passed straight through to LLVM's MC layer:
+The callable shorthand also works — `asm("...")` and `asm.asm("...")` are equivalent:
+
+```python
+asm = Assembler.cortex_m7_dp()
+asm("mrs r0, PRIMASK")           # b'\xef\xf3\x10\x80'
+```
+
+Or use the module-level convenience API:
+
+```python
+import flintmc
+
+flintmc.default = flintmc.Assembler.x86_64()
+flintmc.asm("nop")               # b'\x90'
+```
+
+### Multi-instruction assembly
+
+Semicolons or newlines separate instructions. Labels, literal pools, and all standard assembler directives are passed straight through to LLVM's MC layer:
 
 ```python
 asm = Assembler.cortex_m7_dp()
 
+# Labels and branches
 asm.asm("""
     loop:
         subs r0, #1
         bne loop
 """)
 
-asm.asm("ldr r0, =0xDEADBEEF\n.ltorg")  # literal pool expansion
+# Literal pool expansion
+asm.asm("ldr r0, =0xDEADBEEF\n.ltorg")
 
-asm.asm("ite eq\nmoveq r0, #1\nmovne r0, #0")  # IT blocks
+# IT blocks
+asm.asm("ite eq\nmoveq r0, #1\nmovne r0, #0")
 ```
 
-Results are cached — identical source strings return the same bytes without re-invoking llvm-mc.
+### Custom targets
+
+For anything not covered by presets, pass LLVM triple/cpu/features directly:
+
+```python
+rv = Assembler(
+    triple="riscv64",
+    cpu="generic-rv64",
+    features="+m,+a,+f,+d",
+)
+rv.asm("addi x1, x0, 42")
+
+# AT&T syntax for x86
+att = Assembler(triple="x86_64", preamble="")
+att.asm("movq %rbx, %rax")
+```
+
+### Error handling
+
+```python
+from flintmc import Assembler, AsmError
+
+asm = Assembler.x86_64()
+try:
+    asm.asm("bad_instruction")
+except AsmError as e:
+    print(e)  # LLVM diagnostic with adjusted line numbers
+```
+
+Results are cached (LRU, thread-safe) — identical source strings return the same bytes without re-invoking llvm-mc.
+
+## Install
+
+```
+brew install llvm     # macOS
+apt install llvm      # Linux
+
+pip install flintmc   # or: uv add flintmc
+```
 
 ## Profiles
 
