@@ -29,8 +29,8 @@ x64.asm("syscall")               # b'\x0f\x05'
 x86 = Assembler.i686()
 x86.asm("int 0x80")              # b'\xcd\x80'
 
-# ARM Cortex-M7 (default)
-asm = Assembler()
+# ARM Cortex-M7
+asm = Assembler.cortex_m7_dp()
 asm.asm("mrs r0, PRIMASK")       # b'\xef\xf3\x10\x80'
 asm.asm("vfma.f32 s0, s1, s2")   # b'\xa0\xee\x81\x0a'
 
@@ -42,7 +42,7 @@ a64.asm("ret")
 Multi-instruction assembly (semicolons or newlines), labels, literal pools, all standard assembler directives — passed straight through to LLVM's MC layer:
 
 ```python
-asm = Assembler()
+asm = Assembler.cortex_m7_dp()
 
 asm.asm("""
     loop:
@@ -53,11 +53,9 @@ asm.asm("""
 asm.asm("ldr r0, =0xDEADBEEF\n.ltorg")  # literal pool expansion
 
 asm.asm("ite eq\nmoveq r0, #1\nmovne r0, #0")  # IT blocks
-
-asm.asm("b .", addr=0x100)  # PC-relative at specific address
 ```
 
-Results are cached — identical `(source, addr)` pairs return the same bytes without re-invoking llvm-mc.
+Results are cached — identical source strings return the same bytes without re-invoking llvm-mc.
 
 ## Profiles
 
@@ -155,5 +153,5 @@ uv run pytest tests/test_thumb2_vs_gas.py           # GAS ground-truth (if arm-n
 
 ## Requirements
 
-- Python >= 3.13
+- Python >= 3.10
 - LLVM (`llvm-mc` binary) — `brew install llvm` / `apt install llvm`

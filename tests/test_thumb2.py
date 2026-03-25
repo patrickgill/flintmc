@@ -1,4 +1,4 @@
-"""Tests for flint_mc assembler."""
+"""Tests for Thumb-2 (ARM Cortex-M) assembly."""
 
 import pytest
 
@@ -7,7 +7,7 @@ from flintmc import Assembler, AsmError
 
 @pytest.fixture(scope="module")
 def asm():
-    return Assembler()
+    return Assembler.cortex_m7_dp()
 
 
 # ---------------------------------------------------------------------------
@@ -32,14 +32,6 @@ class TestBasicThumb:
     def test_multi_newlines(self, asm):
         code = asm.asm("mov r0, #0\nbx lr")
         assert len(code) >= 4
-
-    def test_asm_one(self, asm):
-        code = asm.asm_one("nop")
-        assert code == b"\x00\xbf"
-
-    def test_asm_one_returns_bytes(self, asm):
-        code = asm.asm_one("mov r0, #42")
-        assert len(code) in (2, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -119,13 +111,9 @@ class TestLabels:
         code = asm.asm("1:\nnop\nb 1b")
         assert len(code) >= 4
 
-    def test_branch_with_addr(self, asm):
-        code = asm.asm("b .", addr=0x100)
+    def test_branch_self(self, asm):
+        code = asm.asm("here:\nb here")
         assert len(code) in (2, 4)
-
-    def test_addr_limit(self, asm):
-        with pytest.raises(AsmError, match="exceeds .org limit"):
-            asm.asm("nop", addr=0x100000)
 
 
 # ---------------------------------------------------------------------------
@@ -136,9 +124,7 @@ class TestLiteralPools:
     def test_ldr_equals(self, asm):
         """ldr r0, =0xDEADBEEF — constant pool expansion."""
         code = asm.asm("ldr r0, =0xDEADBEEF\n.ltorg")
-        # Should be a PC-relative load + the literal
         assert len(code) >= 4
-        # The literal should appear somewhere in the output
         assert b"\xef\xbe\xad\xde" in code
 
     def test_ldr_equals_small(self, asm):
@@ -160,11 +146,11 @@ class TestWidthSpecifiers:
         assert len(code) == 4  # 32-bit
 
     def test_narrow_branch(self, asm):
-        code = asm.asm("b.n .", addr=0x100)
+        code = asm.asm("here_n:\nb.n here_n")
         assert len(code) == 2
 
     def test_wide_branch(self, asm):
-        code = asm.asm("b.w .", addr=0x100)
+        code = asm.asm("here_w:\nb.w here_w")
         assert len(code) == 4
 
 
@@ -257,7 +243,6 @@ class TestProfiles:
         a = Assembler.cortex_m7_sp()
         assert a.cpu == "cortex-m7"
         assert a.asm("vfma.f32 s0, s1, s2") == bytes.fromhex("a0ee810a")
-        # SP-only should reject double-precision
         with pytest.raises(AsmError):
             a.asm("vmov.f64 d0, d1")
 
@@ -275,18 +260,33 @@ class TestProfiles:
     def test_cortex_m33(self):
         a = Assembler.cortex_m33()
         assert a.cpu == "cortex-m33"
-        # TrustZone instructions
         assert len(a.asm("sg")) == 4
         assert len(a.asm("tt r0, r1")) == 4
 
     def test_cortex_m0_no_thumb2(self):
         a = Assembler.cortex_m0()
         assert a.cpu == "cortex-m0"
-        # Thumb-1 works
         assert a.asm("nop") == b"\x00\xbf"
-        # Thumb-2 should fail
         with pytest.raises(AsmError):
             a.asm("movw r0, #0x1234")
+
+    def test_bare_assembler_raises(self):
+        with pytest.raises(TypeError, match="requires a target"):
+            Assembler()
+
+
+# ---------------------------------------------------------------------------
+# Repr
+# ---------------------------------------------------------------------------
+
+class TestRepr:
+    def test_repr_with_cpu(self):
+        a = Assembler.cortex_m7_dp()
+        assert repr(a) == "Assembler(thumbv7em-none-eabi, cortex-m7)"
+
+    def test_repr_no_cpu(self):
+        a = Assembler.x86_64()
+        assert repr(a) == "Assembler(x86_64)"
 
 
 # ---------------------------------------------------------------------------
@@ -295,23 +295,23 @@ class TestProfiles:
 
 class TestCaching:
     def test_cache_hit(self):
-        a = Assembler()
+        a = Assembler.cortex_m7_dp()
         _ = a.asm("nop")
         assert a.cache_size >= 1
-        _ = a.asm("nop")  # should hit cache, not grow
+        _ = a.asm("nop")
         assert a.cache_size >= 1
 
     def test_cache_clear(self):
-        a = Assembler()
+        a = Assembler.cortex_m7_dp()
         _ = a.asm("nop")
         a.cache_clear()
         assert a.cache_size == 0
 
     def test_cached_result_identical(self):
-        a = Assembler()
+        a = Assembler.cortex_m7_dp()
         first = a.asm("mov r0, #42")
         second = a.asm("mov r0, #42")
-        assert first is second  # same object from cache
+        assert first is second
 
 
 # ---------------------------------------------------------------------------
@@ -329,8 +329,14 @@ class TestErrors:
 
     def test_bad_llvm_path(self):
         with pytest.raises(FileNotFoundError):
-            Assembler(llvm_mc="/nonexistent/llvm-mc")
+            Assembler(triple="x86_64", llvm_mc="/nonexistent/llvm-mc")
 
     def test_empty_input(self, asm):
         code = asm.asm("")
         assert code == b""
+
+    def test_error_line_numbers(self):
+        """Error line numbers should map to user source, not internal preamble."""
+        a = Assembler.cortex_m7_dp()
+        with pytest.raises(AsmError, match="line 2:"):
+            a.asm("nop\nbad_instruction_here")

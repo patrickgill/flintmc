@@ -4,9 +4,12 @@ Supports any target LLVM can assemble for — ARM Thumb-2, x86, x86_64,
 AArch64, RISC-V, etc.  Provides preset profiles for common targets.
 """
 
+import glob
+import re
 import shutil
 import struct
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -95,17 +98,40 @@ def _default_preamble(triple: str) -> str:
         return ".syntax unified\n.thumb"
     if t.startswith("arm"):
         return ".syntax unified\n.arm"
-    if "x86_64" in t or "x86-64" in t or t.startswith("x86_64"):
+    if "x86_64" in t or "x86-64" in t:
         return ".intel_syntax noprefix"
-    if "i686" in t or "i386" in t or t.startswith("i686") or t.startswith("i386"):
+    if "i686" in t or "i386" in t:
         return ".intel_syntax noprefix\n.code32"
     # AArch64, RISC-V, MIPS, etc. — no special preamble needed
     return ""
 
 
 # ---------------------------------------------------------------------------
+# Error line-number adjustment
+# ---------------------------------------------------------------------------
+
+_STDIN_LINE_RE = re.compile(r"<stdin>:(\d+):")
+
+
+def _fix_error(stderr: str, preamble_lines: int) -> str:
+    """Adjust LLVM error line numbers to account for injected preamble."""
+    lines = []
+    for line in stderr.splitlines():
+        m = _STDIN_LINE_RE.match(line)
+        if m:
+            orig = int(m.group(1))
+            adjusted = max(1, orig - preamble_lines)
+            line = f"line {adjusted}:" + line[m.end():]
+        lines.append(line)
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+_SENTINEL = object()
+
 
 def find_llvm_mc() -> str | None:
     """Try to locate llvm-mc on the system.
@@ -117,8 +143,6 @@ def find_llvm_mc() -> str | None:
     but not yet validated — ``shutil.which`` should find llvm-mc if
     LLVM's bin directory is on PATH.
     """
-    import sys
-
     candidates: list[str] = []
     if sys.platform == "darwin":
         candidates = [
@@ -131,7 +155,6 @@ def find_llvm_mc() -> str | None:
             "/usr/lib/llvm/bin/llvm-mc",
         ]
         # Versioned LLVM installs: /usr/bin/llvm-mc-18, etc.
-        import glob
         versioned = sorted(glob.glob("/usr/bin/llvm-mc-[0-9]*"), reverse=True)
         candidates.extend(versioned)
     # win32: no well-known paths, rely on PATH below
@@ -146,14 +169,23 @@ def find_llvm_mc() -> str | None:
 class Assembler:
     """Multi-architecture assembler backed by llvm-mc.
 
-    Works for any target LLVM supports.  Pass the LLVM triple, CPU,
-    and feature flags — or use a preset profile like
-    ``Assembler.cortex_m7_dp()`` or ``Assembler.x86_64()``.
+    Use a preset profile to construct — ``Assembler()`` with no arguments
+    is not allowed::
+
+        asm = Assembler.x86_64()
+        asm = Assembler.cortex_m7_dp()
+        asm = Assembler.aarch64()
+
+    Or pass LLVM triple/cpu/features directly for any target::
+
+        asm = Assembler(triple="riscv64", cpu="generic-rv64",
+                        features="+m,+a,+f,+d")
 
     Parameters
     ----------
     triple:
         LLVM target triple (e.g. ``thumbv7em-none-eabi``, ``x86_64``).
+        **Required** — no default.
     cpu:
         Target CPU (e.g. ``cortex-m7``, ``generic``).
     features:
@@ -165,24 +197,25 @@ class Assembler:
         ``.intel_syntax noprefix``, etc.  Pass ``""`` to disable.
     llvm_mc:
         Path to the ``llvm-mc`` binary.  Auto-detected if not provided.
-
-    Example
-    -------
-    >>> a = Assembler()
-    >>> a.asm("mrs r0, PRIMASK")
-    b'\\xef\\xf3\\x10\\x80'
-    >>> x = Assembler.x86_64()
-    >>> x.asm("mov rax, rbx; ret")
-    b'\\x48\\x89\\xd8\\xc3'
     """
 
-    triple: str = "thumbv7em-none-eabi"
-    cpu: str = "cortex-m7"
-    features: str = "+fp-armv8,+fp64"
+    triple: str = field(default=_SENTINEL)
+    cpu: str = ""
+    features: str = ""
     preamble: str | None = None
     llvm_mc: str = field(default="")
 
     def __post_init__(self) -> None:
+        if self.triple is _SENTINEL:
+            raise TypeError(
+                "Assembler() requires a target. Use a preset profile:\n"
+                "  Assembler.x86_64()\n"
+                "  Assembler.cortex_m7_dp()\n"
+                "  Assembler.aarch64()\n"
+                "Or pass triple= directly:\n"
+                "  Assembler(triple='riscv64', ...)"
+            )
+
         if not self.llvm_mc:
             found = find_llvm_mc()
             if found is None:
@@ -198,8 +231,11 @@ class Assembler:
         if self.preamble is None:
             self.preamble = _default_preamble(self.triple)
 
-        # Assembly cache: (source, addr) -> bytes
-        self._cache: dict[tuple[str, int], bytes] = {}
+        # Count preamble lines for error line-number adjustment
+        self._preamble_lines = self.preamble.count("\n") + 1 if self.preamble else 0
+
+        # Assembly cache: source -> bytes
+        self._cache: dict[str, bytes] = {}
         # Pre-build the command prefix (immutable after init)
         cmd = [
             self.llvm_mc,
@@ -212,6 +248,12 @@ class Assembler:
         if self.features:
             cmd.append(f"-mattr={self.features}")
         self._cmd = cmd
+
+    def __repr__(self) -> str:
+        parts = [self.triple]
+        if self.cpu:
+            parts.append(self.cpu)
+        return f"Assembler({', '.join(parts)})"
 
     # -- ARM Cortex-M profiles ---------------------------------------------
 
@@ -304,32 +346,27 @@ class Assembler:
 
     def _run(self, source: str) -> bytes:
         """Assemble source text, return raw .text bytes."""
-        result = subprocess.run(
-            self._cmd,
-            input=source.encode(),
-            capture_output=True,
-        )
+        try:
+            result = subprocess.run(
+                self._cmd,
+                input=source.encode(),
+                capture_output=True,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            raise AsmError("llvm-mc timed out (10s limit)")
 
         if result.returncode != 0:
             stderr = result.stderr.decode(errors="replace").strip()
-            lines = []
-            for line in stderr.splitlines():
-                if line.startswith("<stdin>:"):
-                    parts = line.split(": ", 2)
-                    lines.append(": ".join(parts[1:]) if len(parts) > 2 else line)
-                else:
-                    lines.append(line)
-            raise AsmError("\n".join(lines))
+            raise AsmError(_fix_error(stderr, self._preamble_lines))
 
         return _extract_text(result.stdout)
 
-    _ORG_LIMIT = 0x10000  # 64KB — refuse .org beyond this to avoid huge allocations
-
-    def asm(self, source: str, addr: int = 0) -> bytes:
+    def asm(self, source: str) -> bytes:
         """Assemble one or more instructions.
 
-        Results are cached — identical (source, addr) pairs return the
-        same bytes without re-invoking llvm-mc.
+        Results are cached — identical source strings return the same
+        bytes without re-invoking llvm-mc.
 
         Parameters
         ----------
@@ -341,17 +378,6 @@ class Assembler:
 
             Labels, literal pools, and all standard assembler directives
             are passed straight through to LLVM's MC layer.
-        addr:
-            Base address for the assembled code.  Affects absolute
-            address calculations (``adr``, literal pool placement).
-
-            Note: most branch instructions are PC-relative and encode
-            the same regardless of base address.  Use labels for
-            relative branches rather than relying on addr offsets.
-
-            Implemented via ``.org`` directive — limited to 64KB to
-            avoid large zero-padded allocations.  For higher addresses,
-            use labels and relative addressing.
 
         Returns
         -------
@@ -362,15 +388,8 @@ class Assembler:
         AsmError
             If assembly fails.
         """
-        key = (source, addr)
-        if (cached := self._cache.get(key)) is not None:
+        if (cached := self._cache.get(source)) is not None:
             return cached
-
-        if addr and addr > self._ORG_LIMIT:
-            raise AsmError(
-                f"addr {addr:#x} exceeds .org limit ({self._ORG_LIMIT:#x}). "
-                f"Use labels and relative addressing for high addresses."
-            )
 
         # Normalize semicolons -> newlines
         text = source.replace(";", "\n")
@@ -378,30 +397,12 @@ class Assembler:
         parts = []
         if self.preamble:
             parts.append(self.preamble)
-        if addr:
-            parts.append(f".org {addr:#x}")
         parts.append(text)
         full = "\n".join(parts) + "\n"
 
         code = self._run(full)
 
-        # If we used .org, the output is zero-padded up to addr — strip it
-        if addr:
-            code = code[addr:]
-
-        self._cache[key] = code
-        return code
-
-    def asm_one(self, mnemonic: str, addr: int = 0) -> bytes:
-        """Assemble a single instruction.
-
-        Convenience wrapper that assembles one mnemonic and returns
-        the bytes.  For architectures with fixed-width instructions
-        (ARM Thumb, AArch64) this also validates the output size.
-        """
-        code = self.asm(mnemonic, addr=addr)
-        if not code:
-            raise AsmError(f"no output from: {mnemonic!r}")
+        self._cache[source] = code
         return code
 
     @property

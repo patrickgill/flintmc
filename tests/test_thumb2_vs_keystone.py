@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(not ks_available, reason="keystone-engine not in
 
 @pytest.fixture(scope="module")
 def flint():
-    return Assembler()
+    return Assembler.cortex_m7_dp()
 
 
 @pytest.fixture(scope="module")
@@ -29,9 +29,9 @@ def ks():
     return Ks(KS_ARCH_ARM, KS_MODE_THUMB)
 
 
-def ks_asm(ks_instance: "Ks", source: str, addr: int = 0) -> bytes:
+def ks_asm(ks_instance: "Ks", source: str) -> bytes:
     """Keystone asm -> bytes helper."""
-    encoding, _ = ks_instance.asm(source, addr=addr)
+    encoding, _ = ks_instance.asm(source)
     if encoding is None:
         raise ValueError(f"keystone produced no output for: {source!r}")
     return bytes(encoding)

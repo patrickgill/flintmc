@@ -27,7 +27,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def flint():
-    return Assembler()
+    return Assembler.cortex_m7_dp()
 
 
 def gas_asm(source: str, cpu: str = "cortex-m7", fpu: str = "fpv5-d16") -> bytes:
