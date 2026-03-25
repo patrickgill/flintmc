@@ -110,14 +110,32 @@ def _default_preamble(triple: str) -> str:
 def find_llvm_mc() -> str | None:
     """Try to locate llvm-mc on the system.
 
-    Checks common Homebrew and system paths, then falls back to PATH.
+    Checks platform-specific install paths, then falls back to PATH.
     Returns the path string, or None if not found.
+
+    Currently tested on macOS and Linux.  Windows support is planned
+    but not yet validated — ``shutil.which`` should find llvm-mc if
+    LLVM's bin directory is on PATH.
     """
-    candidates = [
-        "/opt/homebrew/opt/llvm/bin/llvm-mc",
-        "/usr/local/opt/llvm/bin/llvm-mc",
-        "/usr/bin/llvm-mc",
-    ]
+    import sys
+
+    candidates: list[str] = []
+    if sys.platform == "darwin":
+        candidates = [
+            "/opt/homebrew/opt/llvm/bin/llvm-mc",   # Apple Silicon Homebrew
+            "/usr/local/opt/llvm/bin/llvm-mc",       # Intel Homebrew
+        ]
+    elif sys.platform.startswith("linux"):
+        candidates = [
+            "/usr/bin/llvm-mc",
+            "/usr/lib/llvm/bin/llvm-mc",
+        ]
+        # Versioned LLVM installs: /usr/bin/llvm-mc-18, etc.
+        import glob
+        versioned = sorted(glob.glob("/usr/bin/llvm-mc-[0-9]*"), reverse=True)
+        candidates.extend(versioned)
+    # win32: no well-known paths, rely on PATH below
+
     for c in candidates:
         if Path(c).is_file():
             return c
@@ -305,6 +323,8 @@ class Assembler:
 
         return _extract_text(result.stdout)
 
+    _ORG_LIMIT = 0x10000  # 64KB — refuse .org beyond this to avoid huge allocations
+
     def asm(self, source: str, addr: int = 0) -> bytes:
         """Assemble one or more instructions.
 
@@ -322,8 +342,16 @@ class Assembler:
             Labels, literal pools, and all standard assembler directives
             are passed straight through to LLVM's MC layer.
         addr:
-            Base address for the assembled code.  Used for PC-relative
-            calculations (branches, adr, etc.).
+            Base address for the assembled code.  Affects absolute
+            address calculations (``adr``, literal pool placement).
+
+            Note: most branch instructions are PC-relative and encode
+            the same regardless of base address.  Use labels for
+            relative branches rather than relying on addr offsets.
+
+            Implemented via ``.org`` directive — limited to 64KB to
+            avoid large zero-padded allocations.  For higher addresses,
+            use labels and relative addressing.
 
         Returns
         -------
@@ -337,6 +365,12 @@ class Assembler:
         key = (source, addr)
         if (cached := self._cache.get(key)) is not None:
             return cached
+
+        if addr and addr > self._ORG_LIMIT:
+            raise AsmError(
+                f"addr {addr:#x} exceeds .org limit ({self._ORG_LIMIT:#x}). "
+                f"Use labels and relative addressing for high addresses."
+            )
 
         # Normalize semicolons -> newlines
         text = source.replace(";", "\n")

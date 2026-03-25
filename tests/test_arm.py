@@ -120,8 +120,12 @@ class TestLabels:
         assert len(code) >= 4
 
     def test_branch_with_addr(self, asm):
-        code = asm.asm("b .", addr=0x1000)
+        code = asm.asm("b .", addr=0x100)
         assert len(code) in (2, 4)
+
+    def test_addr_limit(self, asm):
+        with pytest.raises(AsmError, match="exceeds .org limit"):
+            asm.asm("nop", addr=0x100000)
 
 
 # ---------------------------------------------------------------------------
