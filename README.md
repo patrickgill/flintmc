@@ -136,17 +136,21 @@ except AsmError as e:
 
 Tested on macOS (Apple Silicon + Intel) and Linux. Windows support is planned — `llvm-mc` needs to be on PATH.
 
+## LLVM compatibility
+
+Tested with LLVM 22.x (Homebrew). Should work with LLVM 15+ — the llvm-mc command-line interface and ELF output format have been stable for years. If you hit an issue with an older LLVM version, file a bug.
+
 ## Testing
 
 ```
 uv sync --group dev
-uv run pytest                              # core + x86 tests
+uv run pytest                                       # core + x86 tests (1300+)
 
 uv sync --group compat
 DYLD_LIBRARY_PATH=/opt/homebrew/lib \
-uv run pytest tests/test_vs_keystone.py    # keystone parity
+uv run pytest tests/test_thumb2_vs_keystone.py      # keystone parity
 
-uv run pytest tests/test_vs_gas.py         # GAS ground-truth (if arm-none-eabi-as installed)
+uv run pytest tests/test_thumb2_vs_gas.py           # GAS ground-truth (if arm-none-eabi-as installed)
 ```
 
 ## Requirements
