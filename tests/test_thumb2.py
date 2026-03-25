@@ -340,3 +340,46 @@ class TestErrors:
         a = Assembler.cortex_m7_dp()
         with pytest.raises(AsmError, match="line 2:"):
             a.asm("nop\nbad_instruction_here")
+
+
+# ---------------------------------------------------------------------------
+# Semicolon handling
+# ---------------------------------------------------------------------------
+
+class TestSemicolons:
+    def test_bare_semicolons(self, asm):
+        """Bare semicolons split instructions."""
+        code = asm.asm("mov r0, #0; bx lr")
+        assert len(code) >= 4
+
+    def test_quoted_semicolons_preserved(self, asm):
+        """Semicolons inside .ascii strings are not split."""
+        code = asm.asm('.ascii "hello;world"\n.align 2')
+        assert b"hello;world" in code
+
+    def test_comment_semicolons_preserved(self, asm):
+        """Semicolons after @ comment markers are not split."""
+        code = asm.asm("nop @ comment; not a split")
+        assert code == b"\x00\xbf"
+
+
+# ---------------------------------------------------------------------------
+# Thread safety
+# ---------------------------------------------------------------------------
+
+class TestThreadSafety:
+    def test_concurrent_asm(self):
+        """Multiple threads can call asm() without corruption."""
+        import concurrent.futures
+
+        a = Assembler.cortex_m7_dp()
+        instructions = [f"mov r{i % 8}, #{i}" for i in range(100)]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(a.asm, instr) for instr in instructions]
+            results = [f.result() for f in futures]
+
+        # All should produce non-empty bytes
+        assert all(len(r) > 0 for r in results)
+        # Cache should have entries
+        assert a.cache_size > 0

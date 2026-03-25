@@ -10,6 +10,8 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -111,6 +113,50 @@ def _default_preamble(triple: str) -> str:
 # ---------------------------------------------------------------------------
 
 _STDIN_LINE_RE = re.compile(r"<stdin>:(\d+):")
+
+
+def _split_semicolons(source: str) -> str:
+    """Replace bare semicolons with newlines, preserving quoted strings.
+
+    Handles double-quoted strings (``"hello;world"``) and line comments
+    starting with ``@``, ``#``, or ``//``.
+    """
+    out: list[str] = []
+    for line in source.split("\n"):
+        # Find the comment start (if any) — don't touch semicolons after it
+        comment_start = len(line)
+        in_quote = False
+        for i, ch in enumerate(line):
+            if ch == '"':
+                in_quote = not in_quote
+            elif not in_quote and ch in ("@", "#"):
+                comment_start = i
+                break
+            elif not in_quote and i + 1 < len(line) and line[i:i+2] == "//":
+                comment_start = i
+                break
+
+        # Split semicolons only in the non-comment, non-quoted prefix
+        prefix = line[:comment_start]
+        suffix = line[comment_start:]
+
+        # Replace semicolons in prefix, respecting quotes
+        parts: list[str] = []
+        current: list[str] = []
+        in_quote = False
+        for ch in prefix:
+            if ch == '"':
+                in_quote = not in_quote
+                current.append(ch)
+            elif ch == ";" and not in_quote:
+                parts.append("".join(current))
+                current = []
+            else:
+                current.append(ch)
+        parts.append("".join(current) + suffix)
+        out.extend(parts)
+
+    return "\n".join(out)
 
 
 def _fix_error(stderr: str, preamble_lines: int) -> str:
@@ -234,8 +280,10 @@ class Assembler:
         # Count preamble lines for error line-number adjustment
         self._preamble_lines = self.preamble.count("\n") + 1 if self.preamble else 0
 
-        # Assembly cache: source -> bytes
-        self._cache: dict[str, bytes] = {}
+        # Thread-safe LRU cache: source -> bytes
+        self._cache: OrderedDict[str, bytes] = OrderedDict()
+        self._cache_maxsize = 4096
+        self._lock = threading.Lock()
         # Pre-build the command prefix (immutable after init)
         cmd = [
             self.llvm_mc,
@@ -365,8 +413,9 @@ class Assembler:
     def asm(self, source: str) -> bytes:
         """Assemble one or more instructions.
 
-        Results are cached — identical source strings return the same
-        bytes without re-invoking llvm-mc.
+        Thread-safe.  Results are cached (LRU, up to 4096 entries) —
+        identical source strings return the same bytes without
+        re-invoking llvm-mc.
 
         Parameters
         ----------
@@ -375,6 +424,10 @@ class Assembler:
             separated by newlines or semicolons.  The configured preamble
             (e.g. ``.syntax unified`` for ARM, ``.intel_syntax noprefix``
             for x86) is prepended automatically.
+
+            Semicolons inside quoted strings or after ``@``/``#`` comment
+            markers are preserved — only bare semicolons between
+            instructions are treated as newlines.
 
             Labels, literal pools, and all standard assembler directives
             are passed straight through to LLVM's MC layer.
@@ -388,11 +441,13 @@ class Assembler:
         AsmError
             If assembly fails.
         """
-        if (cached := self._cache.get(source)) is not None:
-            return cached
+        with self._lock:
+            if source in self._cache:
+                self._cache.move_to_end(source)
+                return self._cache[source]
 
-        # Normalize semicolons -> newlines
-        text = source.replace(";", "\n")
+        # Normalize bare semicolons -> newlines (preserve quoted/commented)
+        text = _split_semicolons(source)
 
         parts = []
         if self.preamble:
@@ -402,14 +457,20 @@ class Assembler:
 
         code = self._run(full)
 
-        self._cache[source] = code
+        with self._lock:
+            self._cache[source] = code
+            if len(self._cache) > self._cache_maxsize:
+                self._cache.popitem(last=False)
+
         return code
 
     @property
     def cache_size(self) -> int:
         """Number of cached assembly results."""
-        return len(self._cache)
+        with self._lock:
+            return len(self._cache)
 
     def cache_clear(self) -> None:
         """Clear the assembly result cache."""
-        self._cache.clear()
+        with self._lock:
+            self._cache.clear()
