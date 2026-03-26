@@ -54,6 +54,37 @@ class TestMClassRegisters:
     def test_mrs_basepri_max(self, asm):
         assert len(asm.asm("mrs r0, BASEPRI_MAX")) == 4
 
+    def test_cpsid_i(self, asm):
+        assert len(asm.asm("cpsid i")) in (2, 4)
+
+    def test_cpsie_i(self, asm):
+        assert len(asm.asm("cpsie i")) in (2, 4)
+
+
+# ---------------------------------------------------------------------------
+# Hint instructions
+# ---------------------------------------------------------------------------
+
+class TestHints:
+    def test_yield(self, asm):
+        # YIELD assembles correctly (0xBF10) but Unicorn rejects it at
+        # runtime with UC_ERR_INSN_INVALID — that's a Unicorn gap, not
+        # a flintmc issue.
+        assert asm.asm("yield") == bytes.fromhex("10bf")
+
+    def test_wfi(self, asm):
+        assert len(asm.asm("wfi")) == 2
+
+    def test_wfe(self, asm):
+        assert len(asm.asm("wfe")) == 2
+
+    def test_sev(self, asm):
+        assert len(asm.asm("sev")) == 2
+
+    def test_nop_is_hint(self, asm):
+        # NOP is hint #0
+        assert asm.asm("nop") == b"\x00\xbf"
+
 
 # ---------------------------------------------------------------------------
 # FPv5 instructions (also missing from keystone)
