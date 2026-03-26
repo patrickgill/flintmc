@@ -93,6 +93,120 @@ att = Assembler(triple="x86_64", preamble="")
 att.asm("movq %rbx, %rax")
 ```
 
+### With Unicorn emulation
+
+```python
+from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB
+from flintmc import Assembler
+
+asm = Assembler.cortex_m7_dp()
+uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
+uc.mem_map(0, 0x1000)
+
+code = asm("mov r0, #42; add r0, r0, #1")
+uc.mem_write(0, code)
+uc.emu_start(0 | 1, len(code))  # | 1 for Thumb mode
+print(uc.reg_read(0))           # 43
+```
+
+### Shellcode / x86_64
+
+```python
+asm = Assembler.x86_64()
+
+# Function prologue + epilogue
+asm.asm("push rbp; mov rbp, rsp; sub rsp, 0x20")
+asm.asm("leave; ret")
+
+# SSE
+asm.asm("movaps xmm0, xmm1; addps xmm0, xmm2")
+
+# Syscall stub (Linux)
+asm.asm("""
+    mov rdi, 1
+    lea rsi, [rip + msg]
+    mov rdx, 13
+    mov rax, 1
+    syscall
+""")
+```
+
+### AArch64
+
+```python
+a64 = Assembler.aarch64()
+
+# Basics
+a64("mov x0, #42; ret")
+a64("add x0, x1, x2")
+a64("sdiv x0, x1, x2")
+
+# NEON / SIMD
+a64("fadd v0.4s, v1.4s, v2.4s")
+a64("fmul d0, d1, d2")
+a64("fmadd d0, d1, d2, d3")
+a64("dup v0.4s, v1.s[0]")
+
+# Atomics (ARMv8.1-A LSE)
+lse = Assembler(triple="aarch64", features="+lse")
+lse("cas x0, x1, [x2]")
+lse("ldadd x0, x1, [x2]")
+
+# Function prologue/epilogue
+a64.asm("""
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    ; ... body ...
+    ldp x29, x30, [sp], #16
+    ret
+""")
+
+# Conditional select
+a64("cmp x0, #0; csel x1, x2, x3, eq")
+```
+
+### Cortex-M specifics
+
+```python
+arm = Assembler.cortex_m7_dp()
+
+# Special registers (keystone can't assemble these)
+arm("mrs r0, PRIMASK")
+arm("msr BASEPRI, r0")
+arm("mrs r0, FAULTMASK")
+arm("msr CONTROL, r0")
+
+# FPU — fused multiply-accumulate (also missing from keystone)
+arm("vfma.f32 s0, s1, s2")
+arm("vfms.f32 s0, s1, s2")
+arm("vfnma.f32 s0, s1, s2")
+
+# Integer divide
+arm("udiv r0, r1, r2")
+arm("sdiv r0, r1, r2")
+
+# DSP / saturating arithmetic
+arm("qadd r0, r1, r2")
+arm("ssat r0, #16, r1")
+
+# Bitfield operations
+arm("bfi r0, r1, #8, #4")
+arm("ubfx r0, r1, #0, #8")
+```
+
+### Enforcing FPU constraints
+
+```python
+# Single-precision only — rejects .f64 at assembly time
+sp = Assembler.cortex_m7_sp()
+sp.asm("vadd.f32 s0, s1, s2")   # ok
+sp.asm("vadd.f64 d0, d1, d2")   # raises AsmError
+
+# Double-precision enabled
+dp = Assembler.cortex_m7_dp()
+dp.asm("vadd.f64 d0, d1, d2")   # ok
+```
+
 ### Error handling
 
 ```python
