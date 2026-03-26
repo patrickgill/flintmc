@@ -317,9 +317,20 @@ Tested on macOS (Apple Silicon + Intel) and Linux. Windows support is planned â€
 
 ## LLVM compatibility
 
-Requires **LLVM 7.0+** (the C API function `LLVMSetModuleInlineAsm2` was added in 7.0). Tested with LLVM 22.x (Homebrew). In practice, any LLVM from the last 5+ years works.
+Tested on **LLVM 22.1.1** (Homebrew, macOS ARM64).
 
-The subprocess fallback uses `llvm-mc`, which has been stable across all LLVM versions.
+**C API backend** relies on these LLVM C API functions:
+
+| Function | Since |
+|----------|-------|
+| `LLVMContextSetDiagnosticHandler` | LLVM 3.5 |
+| `LLVMCreateTargetDataLayout` | LLVM 3.9 |
+| `LLVMSetModuleDataLayout` | LLVM 3.9 |
+| `LLVMSetModuleInlineAsm2` | LLVM 7.0 |
+
+Minimum: **LLVM 7.0+** (bottleneck is `LLVMSetModuleInlineAsm2`, the length-parameterized variant added in 7.0).
+
+**Subprocess backend** uses `llvm-mc`, which has been included in LLVM since **3.0** (2011). The command-line interface and ELF output format are stable.
 
 ## Testing
 
