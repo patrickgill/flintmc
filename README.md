@@ -4,7 +4,7 @@ Multi-architecture assembler backed by [llvm-mc](https://llvm.org/docs/CommandGu
 
 Works for any target LLVM supports — x86, x86_64, ARM Thumb-2, AArch64, RISC-V, etc. Built as a modern replacement for [keystone-engine](https://www.keystone-engine.org/) that stays current with LLVM instead of lagging behind by a decade.
 
-Pure Python — calls into your system's `libLLVM` via ctypes for in-process assembly (~0.2ms/call), with automatic fallback to `llvm-mc` subprocess if `libLLVM` isn't available. No vendored LLVM code, no compiled extensions.
+Pure Python — calls into your system's `libLLVM` via ctypes for in-process assembly, with automatic fallback to `llvm-mc` subprocess if `libLLVM` isn't available. No vendored LLVM code, no compiled extensions. In our tests, the C API backend was roughly 60x faster than subprocess.
 
 ```python
 from flintmc import Assembler
@@ -298,7 +298,7 @@ except AsmError as e:
 
 ## How it works
 
-**Default (C API backend, ~0.2ms/call):**
+**Default (C API backend):**
 1. Assembly source is wrapped with auto-detected preamble directives
 2. Injected into a throwaway LLVM module via `LLVMSetModuleInlineAsm2()`
 3. Emitted as an ELF object via `LLVMTargetMachineEmitToMemoryBuffer()`
@@ -306,7 +306,7 @@ except AsmError as e:
 
 All via ctypes into your system's `libLLVM` — no subprocess, no temp files. A `LLVMContextSetDiagnosticHandler` intercepts assembly errors so they become `AsmError` exceptions instead of crashing.
 
-**Fallback (subprocess backend, ~10ms/call):**
+**Fallback (subprocess backend):**
 If `libLLVM` isn't found, falls back to piping through `llvm-mc -filetype=obj -o -`.
 
 Force a specific backend with `backend="capi"` or `backend="subprocess"`.
