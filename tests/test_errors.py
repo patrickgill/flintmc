@@ -4,6 +4,8 @@ Verifies that specific error messages are raised for unknown architectures,
 missing LLVM symbols, and other target-related configuration issues.
 """
 
+import ctypes
+from unittest.mock import MagicMock, patch
 import pytest
 import flintmc.llvm_capi
 from flintmc import Assembler, AsmError
@@ -21,6 +23,7 @@ def test_unsupported_triple_error():
     triple = "unknown-arch-none-eabi"
     # Force CAPI to ensure we trigger the llvm_capi logic
     with pytest.raises(AsmError) as excinfo:
+        # Use a fresh Assembler each time
         asm = Assembler(triple=triple, backend="capi")
         asm("nop")
     
@@ -39,3 +42,112 @@ def test_missing_symbol_error(clean_arch_mapping):
     
     assert "LLVM symbol 'LLVMInitializeFakeArchTargetInfo' not found" in str(excinfo.value)
     assert "Is FakeArch support enabled in your LLVM build?" in str(excinfo.value)
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API backend not available")
+def test_llvm_function_not_found():
+    """Verify error when a required core LLVM function is missing from the library."""
+    with patch("flintmc.llvm_capi._lib", None), \
+         patch("flintmc.llvm_capi.Path.exists", return_value=True), \
+         patch("ctypes.CDLL") as mock_cdll:
+        
+        # Mock CDLL to return a mock that lacks one required function
+        mock_lib = MagicMock()
+        del mock_lib.LLVMContextCreate
+        mock_cdll.return_value = mock_lib
+        
+        with pytest.raises(RuntimeError) as excinfo:
+            flintmc.llvm_capi._load_llvm()
+        
+        assert "Required LLVM function 'LLVMContextCreate' not found" in str(excinfo.value)
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API backend not available")
+def test_target_machine_creation_failure():
+    """Verify error when LLVMCreateTargetMachine returns NULL."""
+    lib = flintmc.llvm_capi._load_llvm()
+    triple = "x86_64-pc-linux-gnu-test-tm"
+    
+    # We need to mock LLVMDisposeTargetMachine etc. to be safe during cleanup
+    with patch.object(lib, "LLVMCreateTargetMachine", return_value=0), \
+         patch.object(lib, "LLVMDisposeModule"), \
+         patch.object(lib, "LLVMContextDispose"):
+        
+        asm = Assembler(triple=triple, backend="capi")
+        try:
+            with pytest.raises(AsmError) as excinfo:
+                asm("nop")
+            assert "LLVMCreateTargetMachine() failed" in str(excinfo.value)
+        finally:
+            if hasattr(asm._local, "capi"):
+                asm._local.capi.close()
+                del asm._local.capi
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API backend not available")
+def test_module_creation_failure():
+    """Verify error when LLVMModuleCreateWithNameInContext returns NULL."""
+    lib = flintmc.llvm_capi._load_llvm()
+    triple = "x86_64-pc-linux-gnu-test-mod"
+    
+    with patch.object(lib, "LLVMModuleCreateWithNameInContext", return_value=0), \
+         patch.object(lib, "LLVMDisposeTargetMachine"), \
+         patch.object(lib, "LLVMContextDispose"):
+        
+        asm = Assembler(triple=triple, backend="capi")
+        try:
+            with pytest.raises(AsmError) as excinfo:
+                asm("nop")
+            assert "LLVMModuleCreateWithNameInContext() failed" in str(excinfo.value)
+        finally:
+            if hasattr(asm._local, "capi"):
+                asm._local.capi.close()
+                del asm._local.capi
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API backend not available")
+def test_data_layout_creation_failure():
+    """Verify error when LLVMCreateTargetDataLayout returns NULL."""
+    lib = flintmc.llvm_capi._load_llvm()
+    triple = "x86_64-pc-linux-gnu-test-dl"
+    
+    with patch.object(lib, "LLVMCreateTargetDataLayout", return_value=0), \
+         patch.object(lib, "LLVMDisposeTargetMachine"), \
+         patch.object(lib, "LLVMDisposeModule"), \
+         patch.object(lib, "LLVMContextDispose"):
+        
+        asm = Assembler(triple=triple, backend="capi")
+        try:
+            with pytest.raises(AsmError) as excinfo:
+                asm("nop")
+            assert "LLVMCreateTargetDataLayout() failed" in str(excinfo.value)
+        finally:
+            if hasattr(asm._local, "capi"):
+                asm._local.capi.close()
+                del asm._local.capi
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API backend not available")
+def test_asm_failure_with_diagnostics():
+    """Verify that diagnostics are included in the error message when assembly fails."""
+    triple = "x86_64-pc-linux-gnu-test-diag"
+    asm = Assembler(triple=triple, backend="capi")
+    
+    lib = flintmc.llvm_capi._load_llvm()
+    
+    # Force backend creation
+    backend = asm._get_capi_backend()
+    
+    # Inject an error via LLVMSetModuleInlineAsm2 so it happens AFTER the clear() in backend.asm()
+    def mock_set_asm(*args):
+        backend._errors.append("Directly injected diagnostic error")
+        return None
+
+    with patch.object(lib, "LLVMTargetMachineEmitToMemoryBuffer", return_value=1), \
+         patch.object(lib, "LLVMSetModuleInlineAsm2", side_effect=mock_set_asm), \
+         patch.object(lib, "LLVMDisposeMessage"):
+        
+        try:
+            with pytest.raises(AsmError) as excinfo:
+                asm.asm("nop")
+            
+            assert "Directly injected diagnostic error" in str(excinfo.value)
+            assert "assembly failed" in str(excinfo.value)
+        finally:
+            backend.close()
+            del asm._local.capi
