@@ -13,6 +13,8 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, List, Literal, Optional
 
@@ -324,25 +326,31 @@ class Assembler:
         # Count preamble lines for error line-number adjustment
         self._preamble_lines = self.preamble.count("\n") + 1 if self.preamble else 0
 
+        # Thread-safe LRU cache: source -> bytes
+        self._cache: OrderedDict[str, bytes] = OrderedDict()
+        self._cache_maxsize = 4096
+        self._lock = threading.Lock()
+
+        # Performance fix: Thread-Local Storage for backends.
+        # This allows multiple threads to assemble concurrently by giving
+        # each thread its own private libLLVM context and target machine.
+        self._local = threading.local()
+
         # Backend selection
         # 1. Use explicit backend if passed to constructor
-
         # 2. Use global default (e.g. from pytest --backend)
         # 3. Auto-detect (C API preferred)
         requested = backend or Assembler.default_backend
         
-        self._capi: Any = None
         if requested == "capi":
-            self._capi = try_create_backend(triple, cpu, features)
-            if not self._capi:
-                raise RuntimeError(f"C API backend failed for {triple}")
+            if not self.capi_available():
+                raise RuntimeError(f"C API backend requested but libLLVM not found")
             self.backend = "capi"
         elif requested == "subprocess":
             self.backend = "subprocess"
         else:
             # Auto-detect: Prefer C API
-            self._capi = try_create_backend(triple, cpu, features)
-            if self._capi:
+            if self.capi_available():
                 self.backend = "capi"
             elif self.subprocess_available():
                 self.backend = "subprocess"
@@ -371,6 +379,15 @@ class Assembler:
             if self.features:
                 cmd.append(f"-mattr={self.features}")
         self._cmd = cmd
+
+    def _get_capi_backend(self) -> Any:
+        """Get or create the thread-local C API backend instance."""
+        if not hasattr(self._local, "capi"):
+            # Create a private backend instance for this thread
+            self._local.capi = try_create_backend(self.triple, self.cpu, self.features)
+            if not self._local.capi:
+                raise RuntimeError(f"Failed to create C API backend for {self.triple}")
+        return self._local.capi
 
     def __repr__(self) -> str:
         parts = [self.triple]
@@ -501,13 +518,17 @@ class Assembler:
         raise AsmError(f"Unknown backend: {self.backend}")
 
     def _run_capi(self, source: str) -> bytes:
-        """Assemble via in-process LLVM C API (~0.2ms/call).
+        """Assemble via in-process LLVM C API (~0.15ms/call).
 
-        Uses a private LLVMContext with a diagnostic handler to intercept
-        errors safely — no exit(), proper AsmError on bad input.
+        Uses a private thread-local LLVMContext with a diagnostic handler to
+        intercept errors safely — no exit(), proper AsmError on bad input.
         """
         try:
-            elf = self._capi.asm(source)  # type: ignore[union-attr]
+            # Performance fix: Retrieve the thread-local backend instance.
+            # This enables true concurrency as each thread has its own
+            # LLVM context and doesn't wait on a global backend lock.
+            backend = self._get_capi_backend()
+            elf = backend.asm(source)
             return _extract_text(elf)
         except RuntimeError as exc:
             raise AsmError(_fix_error(str(exc), self._preamble_lines))
@@ -533,6 +554,10 @@ class Assembler:
     def asm(self, source: str) -> bytes:
         """Assemble one or more instructions.
 
+        Thread-safe.  Results are cached (LRU, up to 4096 entries) —
+        identical source strings return the same bytes without
+        re-invoking the backend.
+
         Parameters
         ----------
         source:
@@ -557,6 +582,11 @@ class Assembler:
         AsmError
             If assembly fails.
         """
+        with self._lock:
+            if source in self._cache:
+                self._cache.move_to_end(source)
+                return self._cache[source]
+
         # Normalize bare semicolons -> newlines (preserve quoted/commented)
         text = _split_semicolons(source)
 
@@ -566,4 +596,22 @@ class Assembler:
         parts.append(text)
         full = "\n".join(parts) + "\n"
 
-        return self._run(full)
+        code = self._run(full)
+
+        with self._lock:
+            self._cache[source] = code
+            if len(self._cache) > self._cache_maxsize:
+                self._cache.popitem(last=False)
+
+        return code
+
+    @property
+    def cache_size(self) -> int:
+        """Number of cached assembly results."""
+        with self._lock:
+            return len(self._cache)
+
+    def cache_clear(self) -> None:
+        """Clear the assembly result cache."""
+        with self._lock:
+            self._cache.clear()

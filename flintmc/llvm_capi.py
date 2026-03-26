@@ -57,25 +57,27 @@ _LLVM_PATHS = {
 
 _lib: ctypes.CDLL | None = None
 _initialized_arches: set[str] = set()
+_init_lock = threading.Lock()
 
 
 def _load_llvm() -> ctypes.CDLL | None:
     """Try to load libLLVM. Returns None if not found."""
     global _lib
-    if _lib is not None:
-        return _lib
+    with _init_lock:
+        if _lib is not None:
+            return _lib
 
-    platform = "darwin" if sys.platform == "darwin" else "linux"
-    candidates = _LLVM_PATHS.get(platform, [])
+        platform = "darwin" if sys.platform == "darwin" else "linux"
+        candidates = _LLVM_PATHS.get(platform, [])
 
-    for path in candidates:
-        if Path(path).exists():
-            try:
-                _lib = ctypes.CDLL(path)
-                _declare_argtypes(_lib)
-                return _lib
-            except OSError:
-                continue
+        for path in candidates:
+            if Path(path).exists():
+                try:
+                    _lib = ctypes.CDLL(path)
+                    _declare_argtypes(_lib)
+                    return _lib
+                except OSError:
+                    continue
     return None
 
 
@@ -178,19 +180,20 @@ def _arch_for_triple(triple: str) -> str | None:
 
 
 def _init_target(lib: ctypes.CDLL, arch: str) -> bool:
-    if arch in _initialized_arches:
-        return True
+    with _init_lock:
+        if arch in _initialized_arches:
+            return True
 
-    for suffix in ["TargetInfo", "Target", "AsmPrinter", "AsmParser", "TargetMC"]:
-        name = f"LLVMInitialize{arch}{suffix}"
-        fn = getattr(lib, name, None)
-        if fn is None:
-            return False
-        fn.restype = None
-        fn.argtypes = []
-        fn()
+        for suffix in ["TargetInfo", "Target", "AsmPrinter", "AsmParser", "TargetMC"]:
+            name = f"LLVMInitialize{arch}{suffix}"
+            fn = getattr(lib, name, None)
+            if fn is None:
+                return False
+            fn.restype = None
+            fn.argtypes = []
+            fn()
 
-    _initialized_arches.add(arch)
+        _initialized_arches.add(arch)
     return True
 
 
@@ -205,6 +208,9 @@ class LlvmCApiBackend:
     errors instead of calling exit(). Reuses a single module and data
     layout for all calls to minimize overhead.
 
+    NOT thread-safe on its own — intended to be used as a thread-local
+    instance by the Assembler class.
+
     Cost: ~0.15ms per call (vs ~10ms for subprocess).
     """
 
@@ -212,11 +218,8 @@ class LlvmCApiBackend:
         self._lib = lib
         self._triple = triple.encode()
 
-        # Per-backend error accumulator + lock for thread safety.
-        # The lock serializes ALL C API calls — LLVM contexts are not
-        # thread-safe, and concurrent module creation/emit will segfault.
+        # Per-backend error accumulator.
         self._errors: list[str] = []
-        self._lock = threading.Lock()
 
         # Create private context with diagnostic handler.
         # The handler captures errors instead of letting LLVM call exit().
@@ -254,8 +257,7 @@ class LlvmCApiBackend:
     def _on_diagnostic(self, info: int, _ctx: int) -> None:
         """LLVM diagnostic callback. Captures error messages.
 
-        Called by LLVM from within emit — the lock is already held
-        by asm(), so we don't re-acquire it here.
+        Called by LLVM from within emit.
         """
         severity = self._lib.LLVMGetDiagInfoSeverity(info)
         if severity == LLVMDSError:
@@ -271,44 +273,42 @@ class LlvmCApiBackend:
     def asm(self, source: str) -> bytes:
         """Assemble source, return raw ELF bytes. Caller extracts .text.
 
-        Thread-safe — serializes all LLVM C API calls behind a lock.
         Raises RuntimeError with LLVM diagnostic on assembly errors.
         """
         lib = self._lib
 
-        with self._lock:
-            self._errors.clear()
+        self._errors.clear()
 
-            src = source.encode()
-            # Injects assembly into the pre-configured module.
-            lib.LLVMSetModuleInlineAsm2(self._mod, src, len(src))
+        src = source.encode()
+        # Injects assembly into the pre-configured module.
+        lib.LLVMSetModuleInlineAsm2(self._mod, src, len(src))
 
-            buf = VP()
-            err = CSTR()
-            # Emits the module (containing the inline asm) to a memory buffer.
-            rc = lib.LLVMTargetMachineEmitToMemoryBuffer(
-                self._tm, self._mod, LLVMObjectFile, ctypes.byref(err), ctypes.byref(buf)
-            )
+        buf = VP()
+        err = CSTR()
+        # Emits the module (containing the inline asm) to a memory buffer.
+        rc = lib.LLVMTargetMachineEmitToMemoryBuffer(
+            self._tm, self._mod, LLVMObjectFile, ctypes.byref(err), ctypes.byref(buf)
+        )
 
-            # Diagnostics fire during emit, even when rc == 0
-            captured = list(self._errors)
-            self._errors.clear()
+        # Diagnostics fire during emit, even when rc == 0
+        captured = list(self._errors)
+        self._errors.clear()
 
-            if captured:
-                if rc == 0 and buf.value:
-                    lib.LLVMDisposeMemoryBuffer(buf)
-                raise RuntimeError("\n".join(captured))
+        if captured:
+            if rc == 0 and buf.value:
+                lib.LLVMDisposeMemoryBuffer(buf)
+            raise RuntimeError("\n".join(captured))
 
-            if rc != 0:
-                msg = err.value.decode() if err.value else "assembly failed"
-                lib.LLVMDisposeMessage(err)
-                raise RuntimeError(msg)
+        if rc != 0:
+            msg = err.value.decode() if err.value else "assembly failed"
+            lib.LLVMDisposeMessage(err)
+            raise RuntimeError(msg)
 
-            start = lib.LLVMGetBufferStart(buf)
-            sz = lib.LLVMGetBufferSize(buf)
-            elf = bytes(ctypes.cast(start, ctypes.POINTER(ctypes.c_char * sz)).contents)
-            lib.LLVMDisposeMemoryBuffer(buf)
-            return elf
+        start = lib.LLVMGetBufferStart(buf)
+        sz = lib.LLVMGetBufferSize(buf)
+        elf = bytes(ctypes.cast(start, ctypes.POINTER(ctypes.c_char * sz)).contents)
+        lib.LLVMDisposeMemoryBuffer(buf)
+        return elf
 
     def close(self) -> None:
         """Release the TargetMachine and context."""
