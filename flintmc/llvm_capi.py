@@ -22,6 +22,7 @@ ARM64 macOS, causing SIGSEGV. See research/llvm-capi-backend.py.
 import ctypes
 import sys
 import threading
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,7 @@ _LLVM_PATHS = {
 _lib: ctypes.CDLL | None = None
 _initialized_arches: set[str] = set()
 _init_lock = threading.Lock()
+_active_backends = 0
 
 
 def _load_llvm() -> ctypes.CDLL | None:
@@ -258,6 +260,7 @@ class LlvmCApiBackend:
         # overwrites existing assembly, avoiding the cost of per-call module creation.
         self._mod = lib.LLVMModuleCreateWithNameInContext(b"flintmc", self._ctx)
         if not self._mod:
+            lib.LLVMDisposeTargetMachine(self._tm)
             lib.LLVMContextDispose(self._ctx)
             raise RuntimeError("LLVMModuleCreateWithNameInContext() failed to create module")
         lib.LLVMSetTarget(self._mod, self._triple)
@@ -270,6 +273,14 @@ class LlvmCApiBackend:
             lib.LLVMContextDispose(self._ctx)
             raise RuntimeError("LLVMCreateTargetDataLayout() failed")
         lib.LLVMSetModuleDataLayout(self._mod, self._dl)
+
+        with _init_lock:
+            _active_backends += 1
+
+        # Register finalizer for automatic cleanup.
+        self._finalizer = weakref.finalize(
+            self, _dispose_resources, lib, self._ctx, self._tm, self._mod, self._dl
+        )
 
     def _on_diagnostic(self, info: int, _ctx: int) -> None:
         """LLVM diagnostic callback. Captures error messages.
@@ -332,26 +343,23 @@ class LlvmCApiBackend:
 
     def close(self) -> None:
         """Release the TargetMachine and context."""
-        active = globals().get("_active_backends")
-        if (self._tm or self._ctx) and active is not None:
-            with _init_lock:
-                globals()["_active_backends"] -= 1
+        self._finalizer()
 
-        if self._tm:
-            self._lib.LLVMDisposeTargetMachine(self._tm)
-            self._tm = None
-        if self._ctx:
-            if hasattr(self, "_mod") and self._mod:
-                self._lib.LLVMDisposeModule(self._mod)
-                self._mod = None
-            if hasattr(self, "_dl") and self._dl:
-                self._lib.LLVMDisposeTargetData(self._dl)
-                self._dl = None
-            self._lib.LLVMContextDispose(self._ctx)
-            self._ctx = None
 
-    def __del__(self) -> None:
-        self.close()
+def _dispose_resources(lib: Any, ctx: int, tm: int, mod: int, dl: int) -> None:
+    """Standalone cleanup function for LlvmCApiBackend."""
+    global _active_backends
+    with _init_lock:
+        _active_backends -= 1
+
+    if tm:
+        lib.LLVMDisposeTargetMachine(tm)
+    if ctx:
+        if mod:
+            lib.LLVMDisposeModule(mod)
+        if dl:
+            lib.LLVMDisposeTargetData(dl)
+        lib.LLVMContextDispose(ctx)
 
 
 def try_create_backend(triple: str, cpu: str, features: str) -> LlvmCApiBackend | None:

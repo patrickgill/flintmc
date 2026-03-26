@@ -66,20 +66,15 @@ def test_target_machine_creation_failure():
     lib = flintmc.llvm_capi._load_llvm()
     triple = "x86_64-pc-linux-gnu-test-tm"
     
-    # We need to mock LLVMDisposeTargetMachine etc. to be safe during cleanup
+    # We need to mock disposal to avoid crashing if we hit cleanup during a failed init
     with patch.object(lib, "LLVMCreateTargetMachine", return_value=0), \
          patch.object(lib, "LLVMDisposeModule"), \
          patch.object(lib, "LLVMContextDispose"):
         
         asm = Assembler(triple=triple, backend="capi")
-        try:
-            with pytest.raises(AsmError) as excinfo:
-                asm("nop")
-            assert "LLVMCreateTargetMachine() failed" in str(excinfo.value)
-        finally:
-            if hasattr(asm._local, "capi"):
-                asm._local.capi.close()
-                del asm._local.capi
+        with pytest.raises(AsmError) as excinfo:
+            asm("nop")
+        assert "LLVMCreateTargetMachine() failed" in str(excinfo.value)
 
 @pytest.mark.skipif(not Assembler.capi_available(), reason="C API backend not available")
 def test_module_creation_failure():
@@ -92,14 +87,9 @@ def test_module_creation_failure():
          patch.object(lib, "LLVMContextDispose"):
         
         asm = Assembler(triple=triple, backend="capi")
-        try:
-            with pytest.raises(AsmError) as excinfo:
-                asm("nop")
-            assert "LLVMModuleCreateWithNameInContext() failed" in str(excinfo.value)
-        finally:
-            if hasattr(asm._local, "capi"):
-                asm._local.capi.close()
-                del asm._local.capi
+        with pytest.raises(AsmError) as excinfo:
+            asm("nop")
+        assert "LLVMModuleCreateWithNameInContext() failed" in str(excinfo.value)
 
 @pytest.mark.skipif(not Assembler.capi_available(), reason="C API backend not available")
 def test_data_layout_creation_failure():
@@ -113,14 +103,9 @@ def test_data_layout_creation_failure():
          patch.object(lib, "LLVMContextDispose"):
         
         asm = Assembler(triple=triple, backend="capi")
-        try:
-            with pytest.raises(AsmError) as excinfo:
-                asm("nop")
-            assert "LLVMCreateTargetDataLayout() failed" in str(excinfo.value)
-        finally:
-            if hasattr(asm._local, "capi"):
-                asm._local.capi.close()
-                del asm._local.capi
+        with pytest.raises(AsmError) as excinfo:
+            asm("nop")
+        assert "LLVMCreateTargetDataLayout() failed" in str(excinfo.value)
 
 @pytest.mark.skipif(not Assembler.capi_available(), reason="C API backend not available")
 def test_asm_failure_with_diagnostics():
@@ -142,12 +127,8 @@ def test_asm_failure_with_diagnostics():
          patch.object(lib, "LLVMSetModuleInlineAsm2", side_effect=mock_set_asm), \
          patch.object(lib, "LLVMDisposeMessage"):
         
-        try:
-            with pytest.raises(AsmError) as excinfo:
-                asm.asm("nop")
-            
-            assert "Directly injected diagnostic error" in str(excinfo.value)
-            assert "assembly failed" in str(excinfo.value)
-        finally:
-            backend.close()
-            del asm._local.capi
+        with pytest.raises(AsmError) as excinfo:
+            asm.asm("nop")
+        
+        assert "Directly injected diagnostic error" in str(excinfo.value)
+        assert "assembly failed" in str(excinfo.value)
