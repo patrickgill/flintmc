@@ -2,6 +2,10 @@
 
 Supports any target LLVM can assemble for — ARM Thumb-2, x86, x86_64,
 AArch64, RISC-V, etc.  Provides preset profiles for common targets.
+
+Uses the LLVM C API (via ctypes) for in-process assembly when libLLVM
+is available (~0.2ms/call). Falls back to llvm-mc subprocess (~10ms/call)
+otherwise.
 """
 
 import glob
@@ -13,6 +17,8 @@ import sys
 import threading
 from collections import OrderedDict
 from pathlib import Path
+
+from .llvm_capi import LlvmCApiBackend, try_create_backend
 
 
 class AsmError(Exception):
@@ -237,7 +243,13 @@ class Assembler:
         ``.syntax unified`` / ``.thumb``, x86 gets
         ``.intel_syntax noprefix``, etc.  Pass ``""`` to disable.
     llvm_mc:
-        Path to the ``llvm-mc`` binary.  Auto-detected if not provided.
+        Path to the ``llvm-mc`` binary.  Used for subprocess fallback
+        and error diagnostics.  Auto-detected if not provided.
+    backend:
+        Assembly backend: ``"subprocess"`` (default) uses llvm-mc with
+        safe error handling.  ``"capi"`` uses the LLVM C API for 65x
+        faster assembly, but LLVM calls ``exit()`` on invalid input —
+        only use when you know the source is valid.
     """
 
     triple: str
@@ -245,6 +257,7 @@ class Assembler:
     features: str
     preamble: str
     llvm_mc: str
+    backend: str
 
     def __init__(
         self,
@@ -254,25 +267,12 @@ class Assembler:
         features: str = "",
         preamble: str | None = None,
         llvm_mc: str = "",
+        backend: str | None = None,
     ) -> None:
         self.triple = triple
         self.cpu = cpu
         self.features = features
         self.preamble = preamble if preamble is not None else _default_preamble(triple)
-
-        if not llvm_mc:
-            found = find_llvm_mc()
-            if found is None:
-                raise FileNotFoundError(
-                    "llvm-mc not found. Install LLVM or pass llvm_mc= path.\n"
-                    "  macOS:  brew install llvm\n"
-                    "  Linux:  apt install llvm"
-                )
-            self.llvm_mc = found
-        elif not Path(llvm_mc).is_file():
-            raise FileNotFoundError(f"llvm-mc not found at: {llvm_mc}")
-        else:
-            self.llvm_mc = llvm_mc
 
         # Count preamble lines for error line-number adjustment
         self._preamble_lines = self.preamble.count("\n") + 1 if self.preamble else 0
@@ -281,24 +281,56 @@ class Assembler:
         self._cache: OrderedDict[str, bytes] = OrderedDict()
         self._cache_maxsize = 4096
         self._lock = threading.Lock()
-        # Pre-build the command prefix (immutable after init)
-        cmd = [
-            self.llvm_mc,
-            f"-triple={self.triple}",
-            "-filetype=obj",
-            "-o", "-",
-        ]
-        if self.cpu:
-            cmd.append(f"-mcpu={self.cpu}")
-        if self.features:
-            cmd.append(f"-mattr={self.features}")
+
+        # C API backend (65x faster) — available but not used by default
+        # because LLVM calls exit() on inline asm errors, killing the
+        # Python process. See research/llvm-capi-backend.py for details.
+        # Once LLVMContextSetDiagnosticHandler interception is working,
+        # this becomes the default path.
+        self._capi: LlvmCApiBackend | None = None
+        if backend == "capi":
+            self._capi = try_create_backend(triple, cpu, features)
+            if self._capi is None:
+                raise RuntimeError(
+                    "C API backend requested but libLLVM not available"
+                )
+
+        self.backend = "capi" if self._capi is not None else "subprocess"
+
+        if not llvm_mc:
+            found = find_llvm_mc()
+            if found is None and self._capi is None:
+                raise FileNotFoundError(
+                    "llvm-mc not found. Install LLVM or pass llvm_mc= path.\n"
+                    "  macOS:  brew install llvm\n"
+                    "  Linux:  apt install llvm"
+                )
+            self.llvm_mc = found or ""
+        elif not Path(llvm_mc).is_file():
+            raise FileNotFoundError(f"llvm-mc not found at: {llvm_mc}")
+        else:
+            self.llvm_mc = llvm_mc
+
+        # Pre-build the subprocess command
+        cmd = []
+        if self.llvm_mc:
+            cmd = [
+                self.llvm_mc,
+                f"-triple={self.triple}",
+                "-filetype=obj",
+                "-o", "-",
+            ]
+            if self.cpu:
+                cmd.append(f"-mcpu={self.cpu}")
+            if self.features:
+                cmd.append(f"-mattr={self.features}")
         self._cmd = cmd
 
     def __repr__(self) -> str:
         parts = [self.triple]
         if self.cpu:
             parts.append(self.cpu)
-        return f"Assembler({', '.join(parts)})"
+        return f"Assembler({', '.join(parts)}, backend={self.backend})"
 
     def __call__(self, source: str) -> bytes:
         """Shorthand for ``asm(source)``."""
@@ -395,6 +427,22 @@ class Assembler:
 
     def _run(self, source: str) -> bytes:
         """Assemble source text, return raw .text bytes."""
+        if self._capi is not None:
+            return self._run_capi(source)
+        return self._run_subprocess(source)
+
+    def _run_capi(self, source: str) -> bytes:
+        """Assemble via in-process LLVM C API (~0.2ms/call).
+
+        WARNING: LLVM calls exit() on inline asm errors, killing the
+        Python process. Only use backend="capi" when you are certain
+        the input is valid (e.g. pre-validated, generated code).
+        """
+        elf = self._capi.asm(source)  # type: ignore[union-attr]
+        return _extract_text(elf)
+
+    def _run_subprocess(self, source: str) -> bytes:
+        """Assemble via llvm-mc subprocess (~10ms/call)."""
         try:
             result = subprocess.run(
                 self._cmd,

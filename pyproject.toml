@@ -1,6 +1,6 @@
 [project]
 name = "flintmc"
-version = "0.1.0"
+version = "0.2.0"
 description = "Multi-architecture assembler backed by llvm-mc"
 requires-python = ">=3.10"
 dependencies = []

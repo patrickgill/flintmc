@@ -313,11 +313,15 @@ class TestProfiles:
 class TestRepr:
     def test_repr_with_cpu(self):
         a = Assembler.cortex_m7_dp()
-        assert repr(a) == "Assembler(thumbv7em-none-eabi, cortex-m7)"
+        r = repr(a)
+        assert r.startswith("Assembler(thumbv7em-none-eabi, cortex-m7")
+        assert "backend=" in r
 
     def test_repr_no_cpu(self):
         a = Assembler.x86_64()
-        assert repr(a) == "Assembler(x86_64)"
+        r = repr(a)
+        assert r.startswith("Assembler(x86_64")
+        assert "backend=" in r
 
 
 # ---------------------------------------------------------------------------
