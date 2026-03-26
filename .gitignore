@@ -1,6 +1,7 @@
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
 *.egg-info/
 dist/
 build/
@@ -8,20 +9,26 @@ build/
 .eggs/
 *.so
 *.dylib
+reproduce_error.py
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
+.tox/
+.nox/
 
-# IDE
+# IDE / Editors
 .idea/
 .vscode/
-*.swp
-*.swo
+*.sw[op]
 *~
+.claude/
+
+# Temporary files
+* copy.*
+* copy
 
 # OS
 .DS_Store
 Thumbs.db
-.DS_Store
