@@ -1,8 +1,8 @@
 # flintmc
 
-LLVM-based multi-architecture assembler for Python. Drop-in replacement for [keystone-engine](https://www.keystone-engine.org/).
+LLVM-based multi-architecture assembler for Python. Drop-in replacement for keystone-engine.
 
-Unlike keystone and similar libraries that ship a frozen copy of LLVM internals, flintmc calls directly into the LLVM you already have installed. When you update LLVM, flintmc gets new instruction support automatically — no waiting for library maintainers to catch up.
+Calls directly into the LLVM already installed on your system. When you update LLVM, flintmc picks up new instruction support automatically.
 
 Supports any target your LLVM supports: x86, x86_64, ARM Thumb-2, AArch64, RISC-V, etc. Pure Python via ctypes, no vendored code, no compiled extensions.
 
