@@ -1,8 +1,10 @@
-"""flintmc — Multi-architecture assembler backed by llvm-mc."""
+"""flintmc — Multi-architecture assembler backed by LLVM."""
+
+__version__ = "0.2.0"
 
 from .assembler import Assembler, AsmError, find_llvm_mc
 
-__all__ = ["Assembler", "AsmError", "find_llvm_mc", "asm", "default"]
+__all__ = ["Assembler", "AsmError", "find_llvm_mc", "asm", "default", "__version__"]
 
 default: Assembler | None = None
 
