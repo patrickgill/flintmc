@@ -1,4 +1,4 @@
-# flintmc
+# Flint MC
 
 LLVM-based multi-architecture assembler for Python. Drop-in replacement for keystone-engine.
 
