@@ -171,7 +171,7 @@ def flint_x86():
 
 @pytest.fixture(scope="module")
 def nx_x86():
-    return Nyxstone("x86_32")
+    return Nyxstone("i686")
 
 
 X86_INSTRUCTIONS = [
@@ -475,30 +475,31 @@ def nx_m0():
 
 
 M0_INSTRUCTIONS = [
+    # Thumb-1 only — must use flag-setting forms (movs/adds/subs etc.)
     "nop",
     "bx lr",
-    "mov r0, #0",
-    "mov r0, #42",
+    "movs r0, #0",
+    "movs r0, #42",
     "mov r0, r1",
     "ldr r0, [r1]",
     "ldr r0, [r1, #4]",
     "str r0, [r1]",
     "str r0, [r1, #4]",
-    "add r0, r1, r2",
-    "add r0, r0, #1",
-    "sub r0, r1, r2",
-    "sub r0, r0, #1",
+    "adds r0, r1, r2",
+    "adds r0, r0, #1",
+    "subs r0, r1, r2",
+    "subs r0, r0, #1",
     "cmp r0, #0",
     "cmp r0, r1",
-    "and r0, r1",
-    "orr r0, r1",
-    "eor r0, r1",
-    "lsl r0, r1, #2",
-    "lsr r0, r1, #4",
-    "asr r0, r1, #4",
-    "mul r0, r1, r0",
-    "mvn r0, r1",
-    "neg r0, r1",
+    "ands r0, r1",
+    "orrs r0, r1",
+    "eors r0, r1",
+    "lsls r0, r1, #2",
+    "lsrs r0, r1, #4",
+    "asrs r0, r1, #4",
+    "muls r0, r1, r0",
+    "mvns r0, r1",
+    "rsbs r0, r1, #0",
     "tst r0, r1",
     "sxtb r0, r1",
     "uxtb r0, r1",

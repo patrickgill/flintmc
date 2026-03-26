@@ -18,7 +18,9 @@ dev = [
 ]
 compat = [
     "keystone-engine>=0.9.2",
-    # "nyxstone>=0.1.0",  # needs LLVM 15-18; build broken on macOS (missing -std=c++17)
-                        # export NYXSTONE_LLVM_PREFIX=/opt/homebrew/opt/llvm@18
-                        # export CXXFLAGS="-std=c++17"
+    # "nyxstone>=0.1.0",  # needs LLVM 15-18 and manual build flags:
+                        # NYXSTONE_LLVM_PREFIX=/opt/homebrew/opt/llvm@18 \
+                        # CXXFLAGS="-std=c++17" \
+                        # LDFLAGS="-L/opt/homebrew/Cellar/zstd/1.5.7_1/lib" \
+                        # uv pip install nyxstone
 ]
