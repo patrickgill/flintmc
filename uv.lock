@@ -31,6 +31,7 @@ source = { editable = "." }
 [package.dev-dependencies]
 compat = [
     { name = "keystone-engine" },
+    { name = "nyxstone" },
 ]
 dev = [
     { name = "pytest" },
@@ -39,7 +40,10 @@ dev = [
 [package.metadata]
 
 [package.metadata.requires-dev]
-compat = [{ name = "keystone-engine", specifier = ">=0.9.2" }]
+compat = [
+    { name = "keystone-engine", specifier = ">=0.9.2" },
+    { name = "nyxstone", specifier = ">=0.1.0" },
+]
 dev = [{ name = "pytest", specifier = ">=9.0.2" }]
 
 [[package]]
@@ -63,6 +67,12 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/88/b9/a9d8b6837346b86bcdda56e5c3fe4ac51f98f4ed40bf71fb6bd8605516da/keystone_engine-0.9.2-py2.py3-none-win32.whl", hash = "sha256:9f81e480904a405ef008f1d9f0e4a05e37d2bd83c5218a27136e1a294b02c1f6", size = 1318239, upload-time = "2020-06-21T14:13:57.122Z" },
     { url = "https://files.pythonhosted.org/packages/a4/8d/58471cb026de45397b29ba4b37ae3e20b434fae14c4b92fd3e9771a7bac8/keystone_engine-0.9.2-py2.py3-none-win_amd64.whl", hash = "sha256:c91db1ff16d9d094e00d1827107d1b4afd5e63ce19b491a0140e660635000e8b", size = 1370823, upload-time = "2020-06-21T14:13:58.476Z" },
 ]
+
+[[package]]
+name = "nyxstone"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/17/42/a28bcfdcdb04aa55696c86296e204c30e39b46e468a3e51d5fb1425a2030/nyxstone-0.1.1.tar.gz", hash = "sha256:b038f8d375de7269a01f2ba639fc9bc73ca4f1678f489f1d723a9a4644ea9eb2", size = 39210, upload-time = "2024-11-20T18:47:23.921Z" }
 
 [[package]]
 name = "packaging"

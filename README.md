@@ -4,7 +4,7 @@ Multi-architecture assembler backed by [llvm-mc](https://llvm.org/docs/CommandGu
 
 Works for any target LLVM supports — x86, x86_64, ARM Thumb-2, AArch64, RISC-V, etc. Built as a modern replacement for [keystone-engine](https://www.keystone-engine.org/) that stays current with LLVM instead of lagging behind by a decade.
 
-Single subprocess call per assembly, ELF `.text` extraction in pure Python, no temp files, no native dependencies beyond LLVM itself.
+Pure Python — calls into your system's `libLLVM` via ctypes for in-process assembly (~0.2ms/call), with automatic fallback to `llvm-mc` subprocess if `libLLVM` isn't available. No vendored LLVM code, no compiled extensions.
 
 ```python
 from flintmc import Assembler
@@ -298,10 +298,18 @@ except AsmError as e:
 
 ## How it works
 
+**Default (C API backend, ~0.2ms/call):**
 1. Assembly source is wrapped with auto-detected preamble directives
-2. Piped to `llvm-mc -triple=... -filetype=obj -o -` via subprocess
-3. `.text` section extracted from the ELF object (32 or 64-bit) in pure Python
-4. Raw machine code bytes returned
+2. Injected into a throwaway LLVM module via `LLVMSetModuleInlineAsm2()`
+3. Emitted as an ELF object via `LLVMTargetMachineEmitToMemoryBuffer()`
+4. `.text` section extracted in pure Python, raw machine code bytes returned
+
+All via ctypes into your system's `libLLVM` — no subprocess, no temp files. A `LLVMContextSetDiagnosticHandler` intercepts assembly errors so they become `AsmError` exceptions instead of crashing.
+
+**Fallback (subprocess backend, ~10ms/call):**
+If `libLLVM` isn't found, falls back to piping through `llvm-mc -filetype=obj -o -`.
+
+Force a specific backend with `backend="capi"` or `backend="subprocess"`.
 
 ## Platform
 
@@ -309,7 +317,9 @@ Tested on macOS (Apple Silicon + Intel) and Linux. Windows support is planned �
 
 ## LLVM compatibility
 
-Tested with LLVM 22.x (Homebrew). Should work with LLVM 15+ — the llvm-mc command-line interface and ELF output format have been stable for years. If you hit an issue with an older LLVM version, file a bug.
+Requires **LLVM 7.0+** (the C API function `LLVMSetModuleInlineAsm2` was added in 7.0). Tested with LLVM 22.x (Homebrew). In practice, any LLVM from the last 5+ years works.
+
+The subprocess fallback uses `llvm-mc`, which has been stable across all LLVM versions.
 
 ## Testing
 
@@ -327,4 +337,4 @@ uv run pytest tests/test_thumb2_vs_gas.py           # GAS ground-truth (if arm-n
 ## Requirements
 
 - Python >= 3.10
-- LLVM (`llvm-mc` binary) — `brew install llvm` / `apt install llvm`
+- LLVM 7.0+ (`libLLVM` shared library + `llvm-mc` binary) — `brew install llvm` / `apt install llvm`
