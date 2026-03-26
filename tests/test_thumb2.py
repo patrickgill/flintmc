@@ -325,6 +325,31 @@ class TestRepr:
 
 
 # ---------------------------------------------------------------------------
+# Caching
+# ---------------------------------------------------------------------------
+
+class TestCaching:
+    def test_cache_hit(self):
+        a = Assembler.cortex_m7_dp()
+        _ = a.asm("nop")
+        assert a.cache_size >= 1
+        _ = a.asm("nop")
+        assert a.cache_size >= 1
+
+    def test_cache_clear(self):
+        a = Assembler.cortex_m7_dp()
+        _ = a.asm("nop")
+        a.cache_clear()
+        assert a.cache_size == 0
+
+    def test_cached_result_identical(self):
+        a = Assembler.cortex_m7_dp()
+        first = a.asm("mov r0, #42")
+        second = a.asm("mov r0, #42")
+        assert first is second
+
+
+# ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------
 
@@ -391,6 +416,8 @@ class TestThreadSafety:
 
         # All should produce non-empty bytes
         assert all(len(r) > 0 for r in results)
+        # Cache should have entries
+        assert a.cache_size > 0
 
 
 # ---------------------------------------------------------------------------
