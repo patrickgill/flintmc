@@ -62,18 +62,23 @@ att("movq %rbx, %rax")
 
 ```python
 # x86
-Assembler.x86_64()             # Intel syntax
-Assembler.i686()               # 32-bit, Intel syntax
+Assembler.x86_64()             # x86-64, Intel syntax
+Assembler.x86_32()             # x86 32-bit, Intel syntax (alias: i686)
 
-# ARM Cortex-M
-Assembler.cortex_m7_sp()       # FPv5 single-precision — rejects .f64
-Assembler.cortex_m7_dp()       # FPv5 single + double precision
-Assembler.cortex_m4()          # FPv4 single-precision
-Assembler.cortex_m33()         # ARMv8-M, TrustZone, DSP
-Assembler.cortex_m0()          # Thumb-1 only, no FPU
+# ARM — architecture level
+Assembler.armv6m()             # ARMv6-M (Cortex-M0/M0+), Thumb-1
+Assembler.armv7m()             # ARMv7-M (Cortex-M3/M4/M7), Thumb-2
+Assembler.armv8m()             # ARMv8-M Mainline (Cortex-M33/M55), TrustZone
+
+# ARM — specific CPU + FPU
+Assembler.cortex_m7_sp()       # Cortex-M7, FPv5 single-precision — rejects .f64
+Assembler.cortex_m7_dp()       # Cortex-M7, FPv5 single + double precision
+Assembler.cortex_m4()          # Cortex-M4, FPv4 single-precision
+Assembler.cortex_m33()         # Cortex-M33, FPv5-SP + DSP + TrustZone
+Assembler.cortex_m0()          # Cortex-M0, Thumb-1 only, no FPU
 
 # AArch64
-Assembler.aarch64()
+Assembler.aarch64()            # ARMv8-A 64-bit
 ```
 
 ## Error handling
