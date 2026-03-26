@@ -117,7 +117,8 @@ def _default_preamble(triple: str) -> str:
 # Error line-number adjustment
 # ---------------------------------------------------------------------------
 
-_STDIN_LINE_RE = re.compile(r"<stdin>:(\d+):")
+# Matches both subprocess ("<stdin>:N:") and C API ("<inline asm>:N:") errors
+_STDIN_LINE_RE = re.compile(r"<(?:stdin|inline asm)>:(\d+):")
 
 
 def _split_semicolons(source: str) -> str:
@@ -246,10 +247,10 @@ class Assembler:
         Path to the ``llvm-mc`` binary.  Used for subprocess fallback
         and error diagnostics.  Auto-detected if not provided.
     backend:
-        Assembly backend: ``"subprocess"`` (default) uses llvm-mc with
-        safe error handling.  ``"capi"`` uses the LLVM C API for 65x
-        faster assembly, but LLVM calls ``exit()`` on invalid input —
-        only use when you know the source is valid.
+        Assembly backend: ``None`` (default) auto-detects — uses the
+        LLVM C API if libLLVM is available (65x faster), otherwise
+        falls back to llvm-mc subprocess.  Force with ``"capi"`` or
+        ``"subprocess"``.
     """
 
     triple: str
@@ -282,15 +283,12 @@ class Assembler:
         self._cache_maxsize = 4096
         self._lock = threading.Lock()
 
-        # C API backend (65x faster) — available but not used by default
-        # because LLVM calls exit() on inline asm errors, killing the
-        # Python process. See research/llvm-capi-backend.py for details.
-        # Once LLVMContextSetDiagnosticHandler interception is working,
-        # this becomes the default path.
+        # C API backend (65x faster) — uses LLVMContextSetDiagnosticHandler
+        # to intercept errors instead of letting LLVM call exit().
         self._capi: LlvmCApiBackend | None = None
-        if backend == "capi":
+        if backend != "subprocess":
             self._capi = try_create_backend(triple, cpu, features)
-            if self._capi is None:
+            if backend == "capi" and self._capi is None:
                 raise RuntimeError(
                     "C API backend requested but libLLVM not available"
                 )
@@ -434,12 +432,14 @@ class Assembler:
     def _run_capi(self, source: str) -> bytes:
         """Assemble via in-process LLVM C API (~0.2ms/call).
 
-        WARNING: LLVM calls exit() on inline asm errors, killing the
-        Python process. Only use backend="capi" when you are certain
-        the input is valid (e.g. pre-validated, generated code).
+        Uses a private LLVMContext with a diagnostic handler to intercept
+        errors safely — no exit(), proper AsmError on bad input.
         """
-        elf = self._capi.asm(source)  # type: ignore[union-attr]
-        return _extract_text(elf)
+        try:
+            elf = self._capi.asm(source)  # type: ignore[union-attr]
+            return _extract_text(elf)
+        except RuntimeError as exc:
+            raise AsmError(_fix_error(str(exc), self._preamble_lines))
 
     def _run_subprocess(self, source: str) -> bytes:
         """Assemble via llvm-mc subprocess (~10ms/call)."""

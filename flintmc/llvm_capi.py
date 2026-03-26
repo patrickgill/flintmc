@@ -8,14 +8,19 @@ but LLVMSetModuleInlineAsm2() injects raw assembly into an LLVM IR
 module, and LLVMTargetMachineEmitToMemoryBuffer() emits it as an ELF
 object — going through the MC assembler layer internally.
 
+Error handling: LLVM's inline asm path normally calls exit() on errors.
+We intercept this by installing a LLVMContextSetDiagnosticHandler on a
+private LLVMContext. The handler captures error diagnostics, and we
+check for them after emit to raise AsmError instead of dying.
+
 CRITICAL: All ctypes .argtypes MUST be declared before calling any
 function. Without them, ctypes truncates 64-bit pointers to 32-bit on
-ARM64 macOS, causing SIGSEGV. See research/llvm-capi-backend.py for
-the full crash analysis.
+ARM64 macOS, causing SIGSEGV. See research/llvm-capi-backend.py.
 """
 
 import ctypes
 import sys
+import threading
 from pathlib import Path
 
 VP = ctypes.c_void_p
@@ -24,6 +29,12 @@ CSTR = ctypes.c_char_p
 SZ = ctypes.c_size_t
 
 LLVMObjectFile = 1
+
+# Diagnostic handler callback type: void(LLVMDiagnosticInfoRef, void*)
+DIAG_HANDLER = ctypes.CFUNCTYPE(None, VP, ctypes.c_void_p)
+
+# LLVMDiagnosticSeverity enum
+LLVMDSError = 0
 
 # ---------------------------------------------------------------------------
 # Library loading
@@ -73,7 +84,19 @@ def _declare_argtypes(lib: ctypes.CDLL) -> None:
     This is not optional. Without argtypes, ctypes assumes c_int for
     all arguments, truncating 64-bit pointers on LP64 platforms.
     """
-    # Target init — set dynamically per arch in _init_target()
+    # Context
+    lib.LLVMContextCreate.restype = VP
+    lib.LLVMContextCreate.argtypes = []
+    lib.LLVMContextDispose.restype = None
+    lib.LLVMContextDispose.argtypes = [VP]
+    lib.LLVMContextSetDiagnosticHandler.restype = None
+    lib.LLVMContextSetDiagnosticHandler.argtypes = [VP, DIAG_HANDLER, ctypes.c_void_p]
+
+    # Diagnostic info
+    lib.LLVMGetDiagInfoDescription.restype = CSTR
+    lib.LLVMGetDiagInfoDescription.argtypes = [VP]
+    lib.LLVMGetDiagInfoSeverity.restype = ctypes.c_int
+    lib.LLVMGetDiagInfoSeverity.argtypes = [VP]
 
     # Target lookup
     lib.LLVMGetTargetFromTriple.restype = BOOL
@@ -91,9 +114,9 @@ def _declare_argtypes(lib: ctypes.CDLL) -> None:
     lib.LLVMSetModuleDataLayout.restype = None
     lib.LLVMSetModuleDataLayout.argtypes = [VP, VP]
 
-    # Module
-    lib.LLVMModuleCreateWithName.restype = VP
-    lib.LLVMModuleCreateWithName.argtypes = [CSTR]
+    # Module (context-aware)
+    lib.LLVMModuleCreateWithNameInContext.restype = VP
+    lib.LLVMModuleCreateWithNameInContext.argtypes = [CSTR, VP]
     lib.LLVMSetTarget.restype = None
     lib.LLVMSetTarget.argtypes = [VP, CSTR]
     lib.LLVMSetModuleInlineAsm2.restype = None
@@ -122,7 +145,6 @@ def _declare_argtypes(lib: ctypes.CDLL) -> None:
 # Target initialization
 # ---------------------------------------------------------------------------
 
-# Map triple prefixes to LLVM target names
 _TRIPLE_TO_ARCH = {
     "thumb": "ARM",
     "arm": "ARM",
@@ -138,7 +160,6 @@ _TRIPLE_TO_ARCH = {
 
 
 def _arch_for_triple(triple: str) -> str | None:
-    """Map an LLVM triple to the LLVM target architecture name."""
     t = triple.lower()
     for prefix, arch in _TRIPLE_TO_ARCH.items():
         if t.startswith(prefix):
@@ -147,7 +168,6 @@ def _arch_for_triple(triple: str) -> str | None:
 
 
 def _init_target(lib: ctypes.CDLL, arch: str) -> bool:
-    """Initialize an LLVM target backend. Safe to call multiple times."""
     if arch in _initialized_arches:
         return True
 
@@ -171,9 +191,10 @@ def _init_target(lib: ctypes.CDLL, arch: str) -> bool:
 class LlvmCApiBackend:
     """In-process assembly backend using LLVM's C API.
 
-    Holds a reusable TargetMachine. Each asm() call creates a throwaway
-    module, injects inline asm, emits to an ELF memory buffer, and
-    extracts .text.
+    Creates a private LLVMContext with a diagnostic handler that captures
+    errors instead of calling exit(). Each asm() call creates a throwaway
+    module in this context, injects inline asm, emits to ELF, and checks
+    for captured diagnostics.
 
     Cost: ~0.2ms per cold call (vs ~10ms for subprocess).
     """
@@ -182,54 +203,102 @@ class LlvmCApiBackend:
         self._lib = lib
         self._triple = triple.encode()
 
+        # Per-backend error accumulator + lock for thread safety.
+        # The lock serializes ALL C API calls — LLVM contexts are not
+        # thread-safe, and concurrent module creation/emit will segfault.
+        self._errors: list[str] = []
+        self._lock = threading.Lock()
+
+        # Create private context with diagnostic handler.
+        # The handler captures errors instead of letting LLVM call exit().
+        # The callback must be stored as an attribute to prevent GC.
+        self._diag_callback = DIAG_HANDLER(self._on_diagnostic)
+        self._ctx = lib.LLVMContextCreate()
+        lib.LLVMContextSetDiagnosticHandler(self._ctx, self._diag_callback, None)
+
+        # Target machine (reused across calls)
         target = VP()
         err = CSTR()
         rc = lib.LLVMGetTargetFromTriple(self._triple, ctypes.byref(target), ctypes.byref(err))
         if rc != 0:
             msg = err.value.decode() if err.value else "unknown target"
+            lib.LLVMContextDispose(self._ctx)
             raise RuntimeError(f"LLVM target lookup failed for '{triple}': {msg}")
 
         self._tm = lib.LLVMCreateTargetMachine(
             target, self._triple, cpu.encode(), features.encode(), 0, 0, 0
         )
         if not self._tm:
+            lib.LLVMContextDispose(self._ctx)
             raise RuntimeError(f"Failed to create TargetMachine for '{triple}'")
 
+    def _on_diagnostic(self, info: int, _ctx: int) -> None:
+        """LLVM diagnostic callback. Captures error messages.
+
+        Called by LLVM from within emit — the lock is already held
+        by asm(), so we don't re-acquire it here.
+        """
+        severity = self._lib.LLVMGetDiagInfoSeverity(info)
+        if severity == LLVMDSError:
+            desc = self._lib.LLVMGetDiagInfoDescription(info)
+            msg = desc.decode() if desc else "unknown error"
+            self._errors.append(msg)
+
     def asm(self, source: str) -> bytes:
-        """Assemble source, return .text bytes."""
+        """Assemble source, return raw ELF bytes. Caller extracts .text.
+
+        Thread-safe — serializes all LLVM C API calls behind a lock.
+        Raises RuntimeError with LLVM diagnostic on assembly errors.
+        """
         lib = self._lib
 
-        mod = lib.LLVMModuleCreateWithName(b"flintmc")
-        lib.LLVMSetTarget(mod, self._triple)
-        dl = lib.LLVMCreateTargetDataLayout(self._tm)
-        lib.LLVMSetModuleDataLayout(mod, dl)
+        with self._lock:
+            self._errors.clear()
 
-        src = source.encode()
-        lib.LLVMSetModuleInlineAsm2(mod, src, len(src))
+            mod = lib.LLVMModuleCreateWithNameInContext(b"flintmc", self._ctx)
+            lib.LLVMSetTarget(mod, self._triple)
+            dl = lib.LLVMCreateTargetDataLayout(self._tm)
+            lib.LLVMSetModuleDataLayout(mod, dl)
 
-        buf = VP()
-        err = CSTR()
-        rc = lib.LLVMTargetMachineEmitToMemoryBuffer(
-            self._tm, mod, LLVMObjectFile, ctypes.byref(err), ctypes.byref(buf)
-        )
+            src = source.encode()
+            lib.LLVMSetModuleInlineAsm2(mod, src, len(src))
 
-        if rc != 0:
-            msg = err.value.decode() if err.value else "assembly failed"
+            buf = VP()
+            err = CSTR()
+            rc = lib.LLVMTargetMachineEmitToMemoryBuffer(
+                self._tm, mod, LLVMObjectFile, ctypes.byref(err), ctypes.byref(buf)
+            )
+
+            # Diagnostics fire during emit, even when rc == 0
+            captured = list(self._errors)
+            self._errors.clear()
+
+            if captured:
+                if rc == 0 and buf.value:
+                    lib.LLVMDisposeMemoryBuffer(buf)
+                lib.LLVMDisposeModule(mod)
+                raise RuntimeError("\n".join(captured))
+
+            if rc != 0:
+                msg = err.value.decode() if err.value else "assembly failed"
+                lib.LLVMDisposeModule(mod)
+                raise RuntimeError(msg)
+
+            start = lib.LLVMGetBufferStart(buf)
+            sz = lib.LLVMGetBufferSize(buf)
+            elf = bytes(ctypes.cast(start, ctypes.POINTER(ctypes.c_char * sz)).contents)
+            lib.LLVMDisposeMemoryBuffer(buf)
             lib.LLVMDisposeModule(mod)
-            raise RuntimeError(msg)
-
-        start = lib.LLVMGetBufferStart(buf)
-        sz = lib.LLVMGetBufferSize(buf)
-        elf = bytes(ctypes.cast(start, ctypes.POINTER(ctypes.c_char * sz)).contents)
-        lib.LLVMDisposeMemoryBuffer(buf)
-        lib.LLVMDisposeModule(mod)
-        return elf  # caller extracts .text
+            return elf
 
     def close(self) -> None:
-        """Release the TargetMachine."""
+        """Release the TargetMachine and context."""
         if self._tm:
             self._lib.LLVMDisposeTargetMachine(self._tm)
             self._tm = None
+        if self._ctx:
+            self._lib.LLVMContextDispose(self._ctx)
+            self._ctx = None
 
     def __del__(self) -> None:
         self.close()
