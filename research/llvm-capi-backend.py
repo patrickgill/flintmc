@@ -30,19 +30,35 @@ Critical ctypes gotcha:
     ctypes truncates 64-bit pointers to 32-bit on ARM64 macOS, causing
     SIGSEGV in LLVMDisposeTargetMachine and LLVMCreateTargetDataLayout.
 
-Performance expectation:
-    - Eliminates subprocess spawn (~2-5ms per call)
-    - Module create/emit/dispose should be <1ms for small inputs
-    - Target init + TM creation are one-time costs (~10ms)
-    - Combined with existing LRU cache, cold-call latency drops ~10x
+Measured performance (Apple M4 Max, LLVM 22.1, 100 unique instructions):
+    - C API:      0.2ms/call (0.015s total)
+    - Subprocess: 10.1ms/call (1.010s total)
+    - Speedup:    65x
+
+    Target init + TM creation are one-time costs.
+    Combined with existing LRU cache, only cold calls pay the 0.2ms.
+
+Known limitations of the C API path vs standalone llvm-mc:
+    - No Thumb relaxation: "mov r0, #42" emits wide mov.w (4B) instead of
+      narrow movs (2B). Use "movs" explicitly for narrow. llvm-mc's
+      standalone pipeline runs MCAssembler::relaxInstruction(); the module
+      inline asm path goes through AsmPrinter which skips this.
+    - Error diagnostics: assembly errors are reported via LLVM's diagnostic
+      handler, not stderr. Need LLVMContextSetDiagnosticHandler to capture
+      them programmatically. Without it, errors print to stderr and the
+      emit call returns failure with a generic message.
+    - Module overhead: each call creates and destroys an LLVMModule. This
+      is lightweight (~0.01ms) but involves malloc/free churn. A future
+      optimization could reuse modules by clearing inline asm between calls,
+      but LLVMSetModuleInlineAsm2 replaces (doesn't append), so this
+      already works — just need to verify no stale state leaks.
 
 Next steps:
     - Wrap in a LlvmBackend class alongside existing SubprocessBackend
-    - Assembler picks backend: cffi if libLLVM found, subprocess fallback
-    - Error extraction: LLVM errors go to stderr via a diagnostic handler
-      (LLVMContextSetDiagnosticHandler) — need to capture those
-    - Thread safety: each thread needs its own LLVMContext, or serialize
-      module creation behind a lock
+    - Assembler picks backend: C API if libLLVM found, subprocess fallback
+    - Error capture via LLVMContextSetDiagnosticHandler
+    - Thread safety: serialize module creation behind a lock (the
+      TargetMachine is read-only after creation and safe to share)
 """
 
 import ctypes
@@ -74,7 +90,20 @@ if lib is None:
     sys.exit(1)
 
 # -----------------------------------------------------------------------
-# Type aliases and function signatures (declare ALL argtypes up front)
+# Type aliases and function signatures
+#
+# CRITICAL: Every ctypes function MUST have .restype and .argtypes set
+# BEFORE the first call. Without argtypes, ctypes assumes all arguments
+# are c_int (32-bit). On ARM64 macOS (and any LP64 platform), this
+# silently truncates 64-bit pointers to 32 bits. The LLVM functions
+# receive garbage pointers and segfault — typically inside
+# LLVMDisposeTargetMachine or LLVMCreateTargetDataLayout, because
+# those dereference the mangled pointer immediately.
+#
+# The crash signature is:
+#   EXC_BAD_ACCESS (SIGSEGV) at 0xfffffffff10c4600
+# The 0xffffffff prefix is the sign-extended upper 32 bits of a
+# truncated pointer.
 # -----------------------------------------------------------------------
 
 VP = ctypes.c_void_p
@@ -168,6 +197,12 @@ def extract_text(elf: bytes) -> bytes:
 # -----------------------------------------------------------------------
 
 def init_target(arch: str):
+    """Initialize an LLVM target backend. Must be called once per arch
+    before any assembly. Each call registers the target info, codegen,
+    asm printer, asm parser, and MC layer for that architecture.
+
+    Safe to call multiple times — LLVM internally deduplicates.
+    """
     for suffix in ["TargetInfo", "Target", "AsmPrinter", "AsmParser", "TargetMC"]:
         fn = getattr(lib, f"LLVMInitialize{arch}{suffix}", None)
         if fn:
@@ -175,6 +210,14 @@ def init_target(arch: str):
 
 
 def create_tm(triple: bytes, cpu: bytes = b"", features: bytes = b"") -> VP:
+    """Create a reusable TargetMachine for the given triple.
+
+    The TargetMachine is expensive to create (~1ms) but can be reused
+    for all assemblies targeting the same triple/cpu/features. It owns
+    the subtarget info, asm backend, and code emitter configuration.
+
+    Must be disposed with LLVMDisposeTargetMachine when done.
+    """
     target = VP()
     err = CSTR()
     rc = lib.LLVMGetTargetFromTriple(triple, ctypes.byref(target), ctypes.byref(err))
@@ -184,9 +227,31 @@ def create_tm(triple: bytes, cpu: bytes = b"", features: bytes = b"") -> VP:
 
 
 def asm_via_capi(tm, triple: bytes, preamble: str, source: str) -> bytes:
-    """Assemble source via LLVM C API. Returns .text bytes."""
+    """Assemble source via LLVM C API. Returns .text bytes.
+
+    The trick: LLVM's C API has no direct "assemble this string" function.
+    The MC assembler pipeline (MCAsmParser, MCStreamer, etc.) is C++ only.
+
+    But LLVMSetModuleInlineAsm2() injects raw assembly into an LLVM IR
+    module, and LLVMTargetMachineEmitToMemoryBuffer() emits it as an
+    object file — going through the MC layer internally. We create a
+    throwaway module per call, stuff the asm in, emit, extract .text.
+
+    This is the same path that `__asm__` blocks in C/C++ take through
+    clang, so it's well-tested. The only behavioral difference from
+    standalone llvm-mc: the codegen path doesn't run the Thumb instruction
+    relaxation pass, so "mov r0, #42" emits as mov.w (4 bytes) instead
+    of movs (2 bytes). Use "movs" explicitly for narrow encoding.
+
+    Cost per call: ~0.15ms (module create + emit + ELF parse + dispose).
+    The TargetMachine is reused across calls.
+    """
+    # Fresh module each call — cheap (~0.01ms), avoids stale state
     mod = lib.LLVMModuleCreateWithName(b"flintmc")
     lib.LLVMSetTarget(mod, triple)
+
+    # DataLayout must match the TargetMachine or the backend may
+    # produce incorrect relocations or section alignment
     dl = lib.LLVMCreateTargetDataLayout(tm)
     lib.LLVMSetModuleDataLayout(mod, dl)
 
@@ -198,10 +263,12 @@ def asm_via_capi(tm, triple: bytes, preamble: str, source: str) -> bytes:
     rc = lib.LLVMTargetMachineEmitToMemoryBuffer(tm, mod, LLVMObjectFile,
                                                   ctypes.byref(err), ctypes.byref(buf))
     if rc != 0:
+        # LLVM error strings are allocated with malloc — must dispose
         msg = err.value.decode() if err.value else "unknown error"
         lib.LLVMDisposeModule(mod)
         raise RuntimeError(msg)
 
+    # Copy ELF bytes out of LLVM's buffer before disposing it
     start = lib.LLVMGetBufferStart(buf)
     sz = lib.LLVMGetBufferSize(buf)
     elf = bytes(ctypes.cast(start, ctypes.POINTER(ctypes.c_char * sz)).contents)
