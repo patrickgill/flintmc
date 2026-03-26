@@ -332,10 +332,10 @@ class LlvmCApiBackend:
 
     def close(self) -> None:
         """Release the TargetMachine and context."""
-        global _active_backends
-        if self._tm or self._ctx:
+        active = globals().get("_active_backends")
+        if (self._tm or self._ctx) and active is not None:
             with _init_lock:
-                _active_backends -= 1
+                globals()["_active_backends"] -= 1
 
         if self._tm:
             self._lib.LLVMDisposeTargetMachine(self._tm)
