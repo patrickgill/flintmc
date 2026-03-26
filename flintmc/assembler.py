@@ -144,8 +144,9 @@ def _split_semicolons(source: str) -> str:
         return source
 
     out: list[str] = []
+    in_block_comment = False
     for line in source.split("\n"):
-        if ";" not in line:
+        if ";" not in line and "/*" not in line and "*/" not in line:
             out.append(line)
             continue
 
@@ -155,14 +156,21 @@ def _split_semicolons(source: str) -> str:
         n = len(line)
         while i < n:
             ch = line[i]
-            if ch == '"':
+            if in_block_comment:
+                if ch == "*" and i + 1 < n and line[i+1] == "/":
+                    in_block_comment = False
+                    i += 1
+            elif ch == '"':
                 in_quote = not in_quote
             elif not in_quote:
-                if ch == ';':
+                if ch == "/" and i + 1 < n and line[i+1] == "*":
+                    in_block_comment = True
+                    i += 1
+                elif ch == ";":
                     out.append(line[start:i])
                     start = i + 1
                 elif ch in ("@", "#") or (ch == "/" and i + 1 < n and line[i+1] == "/"):
-                    # Stop at comment start
+                    # Stop at line comment start
                     break
             i += 1
         
