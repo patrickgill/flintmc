@@ -93,6 +93,8 @@ def _declare_argtypes(lib: ctypes.CDLL) -> None:
     lib.LLVMContextSetDiagnosticHandler.argtypes = [VP, DIAG_HANDLER, ctypes.c_void_p]
 
     # Diagnostic info
+    # Returns char* allocated with malloc — must be freed with LLVMDisposeMessage.
+    # Use VP (not CSTR) to preserve the raw pointer for disposal.
     lib.LLVMGetDiagInfoDescription.restype = VP
     lib.LLVMGetDiagInfoDescription.argtypes = [VP]
     lib.LLVMGetDiagInfoSeverity.restype = ctypes.c_int
