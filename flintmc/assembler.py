@@ -12,7 +12,6 @@ import subprocess
 import sys
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -176,9 +175,6 @@ def _fix_error(stderr: str, preamble_lines: int) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
-_SENTINEL = object()
-
-
 def find_llvm_mc() -> str | None:
     """Try to locate llvm-mc on the system.
 
@@ -211,7 +207,6 @@ def find_llvm_mc() -> str | None:
     return shutil.which("llvm-mc")
 
 
-@dataclass
 class Assembler:
     """Multi-architecture assembler backed by llvm-mc.
 
@@ -245,24 +240,27 @@ class Assembler:
         Path to the ``llvm-mc`` binary.  Auto-detected if not provided.
     """
 
-    triple: str = field(default=_SENTINEL)
-    cpu: str = ""
-    features: str = ""
-    preamble: str | None = None
-    llvm_mc: str = field(default="")
+    triple: str
+    cpu: str
+    features: str
+    preamble: str
+    llvm_mc: str
 
-    def __post_init__(self) -> None:
-        if self.triple is _SENTINEL:
-            raise TypeError(
-                "Assembler() requires a target. Use a preset profile:\n"
-                "  Assembler.x86_64()\n"
-                "  Assembler.cortex_m7_dp()\n"
-                "  Assembler.aarch64()\n"
-                "Or pass triple= directly:\n"
-                "  Assembler(triple='riscv64', ...)"
-            )
+    def __init__(
+        self,
+        triple: str,
+        *,
+        cpu: str = "",
+        features: str = "",
+        preamble: str | None = None,
+        llvm_mc: str = "",
+    ) -> None:
+        self.triple = triple
+        self.cpu = cpu
+        self.features = features
+        self.preamble = preamble if preamble is not None else _default_preamble(triple)
 
-        if not self.llvm_mc:
+        if not llvm_mc:
             found = find_llvm_mc()
             if found is None:
                 raise FileNotFoundError(
@@ -271,11 +269,10 @@ class Assembler:
                     "  Linux:  apt install llvm"
                 )
             self.llvm_mc = found
-        elif not Path(self.llvm_mc).is_file():
-            raise FileNotFoundError(f"llvm-mc not found at: {self.llvm_mc}")
-
-        if self.preamble is None:
-            self.preamble = _default_preamble(self.triple)
+        elif not Path(llvm_mc).is_file():
+            raise FileNotFoundError(f"llvm-mc not found at: {llvm_mc}")
+        else:
+            self.llvm_mc = llvm_mc
 
         # Count preamble lines for error line-number adjustment
         self._preamble_lines = self.preamble.count("\n") + 1 if self.preamble else 0
@@ -310,66 +307,66 @@ class Assembler:
     # -- ARM Cortex-M profiles ---------------------------------------------
 
     @classmethod
-    def cortex_m7_sp(cls, **kw) -> "Assembler":
+    def cortex_m7_sp(cls, **kw: str) -> "Assembler":
         """Cortex-M7 with FPv5-SP-D16 (single precision only).
 
         Rejects .f64 instructions at assembly time.  Equivalent to
         ``arm-none-eabi-as -mcpu=cortex-m7 -mfpu=fpv5-sp-d16``.
         """
         return cls(
-            triple="thumbv7em-none-eabi",
+            "thumbv7em-none-eabi",
             cpu="cortex-m7",
             features="+fp-armv8d16sp,-fp64,-fpregs64",
             **kw,
         )
 
     @classmethod
-    def cortex_m7_dp(cls, **kw) -> "Assembler":
+    def cortex_m7_dp(cls, **kw: str) -> "Assembler":
         """Cortex-M7 with FPv5-D16 (single + double precision).
 
         Equivalent to ``arm-none-eabi-as -mcpu=cortex-m7 -mfpu=fpv5-d16``.
         """
         return cls(
-            triple="thumbv7em-none-eabi",
+            "thumbv7em-none-eabi",
             cpu="cortex-m7",
             features="+fp-armv8,+fp64",
             **kw,
         )
 
     @classmethod
-    def cortex_m4(cls, **kw) -> "Assembler":
+    def cortex_m4(cls, **kw: str) -> "Assembler":
         """Cortex-M4 with FPv4-SP (single precision only).
 
         Equivalent to ``arm-none-eabi-as -mcpu=cortex-m4 -mfpu=fpv4-sp-d16``.
         """
         return cls(
-            triple="thumbv7em-none-eabi",
+            "thumbv7em-none-eabi",
             cpu="cortex-m4",
             features="+vfp4,-fp64,-fpregs64",
             **kw,
         )
 
     @classmethod
-    def cortex_m33(cls, **kw) -> "Assembler":
+    def cortex_m33(cls, **kw: str) -> "Assembler":
         """Cortex-M33: ARMv8-M Mainline + FPv5-SP + DSP + TrustZone.
 
         Equivalent to ``arm-none-eabi-as -mcpu=cortex-m33 -mfpu=fpv5-sp-d16``.
         """
         return cls(
-            triple="thumbv8m.main-none-eabi",
+            "thumbv8m.main-none-eabi",
             cpu="cortex-m33",
             features="+fp-armv8d16sp,+dsp,-fp64,-fpregs64",
             **kw,
         )
 
     @classmethod
-    def cortex_m0(cls, **kw) -> "Assembler":
+    def cortex_m0(cls, **kw: str) -> "Assembler":
         """Cortex-M0/M0+: Thumb (v6-M), no Thumb-2, no FPU.
 
         Equivalent to ``arm-none-eabi-as -mcpu=cortex-m0``.
         """
         return cls(
-            triple="thumbv6m-none-eabi",
+            "thumbv6m-none-eabi",
             cpu="cortex-m0",
             features="",
             **kw,
@@ -378,21 +375,21 @@ class Assembler:
     # -- x86 profiles ------------------------------------------------------
 
     @classmethod
-    def x86_64(cls, **kw) -> "Assembler":
+    def x86_64(cls, **kw: str) -> "Assembler":
         """x86-64 with Intel syntax."""
-        return cls(triple="x86_64", cpu="", features="", **kw)
+        return cls("x86_64", cpu="", features="", **kw)
 
     @classmethod
-    def i686(cls, **kw) -> "Assembler":
+    def i686(cls, **kw: str) -> "Assembler":
         """x86 32-bit with Intel syntax."""
-        return cls(triple="i686", cpu="", features="", **kw)
+        return cls("i686", cpu="", features="", **kw)
 
     # -- AArch64 profiles --------------------------------------------------
 
     @classmethod
-    def aarch64(cls, **kw) -> "Assembler":
+    def aarch64(cls, **kw: str) -> "Assembler":
         """AArch64 (ARMv8-A 64-bit)."""
-        return cls(triple="aarch64", cpu="", features="", **kw)
+        return cls("aarch64", cpu="", features="", **kw)
 
     # -- Core assembly -----------------------------------------------------
 

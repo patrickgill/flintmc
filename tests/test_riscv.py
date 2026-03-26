@@ -596,7 +596,7 @@ CSR_TESTS = [
     ("csrr x1, cycle", "csrr_cycle"),
     ("csrr x1, time", "csrr_time"),
     ("csrr x1, instret", "csrr_instret"),
-    ("csrr x1, cycleh", "csrr_cycleh"),
+    # cycleh is RV32 only
     # csrw pseudo (csrrw x0, csr, rs)
     ("csrw sscratch, x1", "csrw_sscratch"),
     ("csrw sepc, x1", "csrw_sepc"),

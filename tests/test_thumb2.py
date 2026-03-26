@@ -302,8 +302,8 @@ class TestProfiles:
             a.asm("movw r0, #0x1234")
 
     def test_bare_assembler_raises(self):
-        with pytest.raises(TypeError, match="requires a target"):
-            Assembler()
+        with pytest.raises(TypeError):
+            Assembler()  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------------------
