@@ -397,6 +397,15 @@ class TestSemicolons:
         code = asm.asm("nop @ comment; not a split")
         assert code == b"\x00\xbf"
 
+    def test_block_comment_semicolons_preserved(self, asm):
+        """Semicolons inside /* ... */ block comments are not split."""
+        code = asm.asm("nop /* block; comment */")
+        assert code == b"\x00\xbf"
+        
+        # Test multi-line block comment
+        code = asm.asm("nop /* block\n; comment */\nnop")
+        assert code == b"\x00\xbf\x00\xbf"
+
 
 # ---------------------------------------------------------------------------
 # Thread safety
