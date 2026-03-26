@@ -1,4 +1,4 @@
-"""flintmc — Multi-architecture assembler backed by LLVM."""
+"""flintmc — LLVM-backed multi-architecture assembler for Python."""
 
 __version__ = "0.2.0"
 

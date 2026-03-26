@@ -4,8 +4,7 @@ Supports any target LLVM can assemble for — ARM Thumb-2, x86, x86_64,
 AArch64, RISC-V, etc.  Provides preset profiles for common targets.
 
 Uses the LLVM C API (via ctypes) for in-process assembly when libLLVM
-is available (~0.2ms/call). Falls back to llvm-mc subprocess (~10ms/call)
-otherwise.
+is available. Falls back to llvm-mc subprocess otherwise.
 """
 
 import glob
@@ -14,15 +13,16 @@ import shutil
 import struct
 import subprocess
 import sys
-import threading
-from collections import OrderedDict
 from pathlib import Path
+from typing import Any, List, Literal, Optional
 
-from .llvm_capi import LlvmCApiBackend, try_create_backend
+from .llvm_capi import LlvmCApiBackend, try_create_backend, is_available
 
 
 class AsmError(Exception):
     """Assembly failed."""
+
+BackendType = Literal["capi", "subprocess"]
 
 
 # ---------------------------------------------------------------------------
@@ -70,23 +70,28 @@ def _extract_text_elf64(elf: bytes) -> bytes:
 def _find_text(elf: bytes, e_shoff: int, e_shentsize: int, e_shnum: int,
                e_shstrndx: int, shdr_struct: struct.Struct,
                off_idx: int, size_idx: int) -> bytes:
-    """Shared logic: walk section headers, find .text, return its contents."""
-    shdrs = []
-    for i in range(e_shnum):
-        off = e_shoff + i * e_shentsize
-        shdrs.append(shdr_struct.unpack_from(elf, off))
-
-    # String table
-    strtab = shdrs[e_shstrndx]
-    strtab_off = strtab[off_idx]
-    strtab_size = strtab[size_idx]
+    """Shared logic: walk section headers, find .text, return its contents.
+    
+    Performance fix: Optimized to avoid full header list creation and use lazy unpacking.
+    Directly jumps to the string table and only parses individual section headers
+    until .text is found.
+    """
+    # Performance fix: Get string table header directly via e_shstrndx
+    strtab_shdr = shdr_struct.unpack_from(elf, e_shoff + e_shstrndx * e_shentsize)
+    strtab_off = strtab_shdr[off_idx]
+    strtab_size = strtab_shdr[size_idx]
     strtab_data = elf[strtab_off : strtab_off + strtab_size]
 
-    for shdr in shdrs:
-        name_off = shdr[0]
-        name_end = strtab_data.index(b"\x00", name_off)
-        name = strtab_data[name_off:name_end].decode("ascii", errors="replace")
-        if name == ".text":
+    for i in range(e_shnum):
+        off = e_shoff + i * e_shentsize
+        # Performance fix: sh_name is always the first 4 bytes of any Elf32/Elf64 
+        # section header. We only unpack this first to check for ".text".
+        name_off = struct.unpack_from("<I", elf, off)[0]
+        
+        # Performance fix: Check if this name matches ".text" (null-terminated)
+        # using a direct slice comparison which is faster than index/decode.
+        if strtab_data[name_off : name_off + 6] == b".text\x00":
+            shdr = shdr_struct.unpack_from(elf, off)
             sec_off = shdr[off_idx]
             sec_size = shdr[size_idx]
             return elf[sec_off : sec_off + sec_size]
@@ -129,41 +134,38 @@ def _split_semicolons(source: str) -> str:
 
     Handles double-quoted strings (``"hello;world"``) and line comments
     starting with ``@``, ``#``, or ``//``.
+    
+    Performance fix: Optimized single-pass implementation that avoids 
+    multiple string allocations and redundant searches.
     """
+    if ";" not in source:
+        return source
+
     out: list[str] = []
     for line in source.split("\n"):
-        # Find the comment start (if any) — don't touch semicolons after it
-        comment_start = len(line)
+        if ";" not in line:
+            out.append(line)
+            continue
+
+        start = 0
         in_quote = False
-        for i, ch in enumerate(line):
+        i = 0
+        n = len(line)
+        while i < n:
+            ch = line[i]
             if ch == '"':
                 in_quote = not in_quote
-            elif not in_quote and ch in ("@", "#"):
-                comment_start = i
-                break
-            elif not in_quote and i + 1 < len(line) and line[i:i+2] == "//":
-                comment_start = i
-                break
-
-        # Split semicolons only in the non-comment, non-quoted prefix
-        prefix = line[:comment_start]
-        suffix = line[comment_start:]
-
-        # Replace semicolons in prefix, respecting quotes
-        parts: list[str] = []
-        current: list[str] = []
-        in_quote = False
-        for ch in prefix:
-            if ch == '"':
-                in_quote = not in_quote
-                current.append(ch)
-            elif ch == ";" and not in_quote:
-                parts.append("".join(current))
-                current = []
-            else:
-                current.append(ch)
-        parts.append("".join(current) + suffix)
-        out.extend(parts)
+            elif not in_quote:
+                if ch == ';':
+                    out.append(line[start:i])
+                    start = i + 1
+                elif ch in ("@", "#") or (ch == "/" and i + 1 < n and line[i+1] == "/"):
+                    # Stop at comment start
+                    break
+            i += 1
+        
+        # Append the rest of the line (including comment if we broke out)
+        out.append(line[start:])
 
     return "\n".join(out)
 
@@ -256,12 +258,53 @@ class Assembler:
         ``"subprocess"``.
     """
 
+    default_backend: Optional[BackendType] = None
+    _resolved_default: Optional[BackendType] = None
+
+    @staticmethod
+    def capi_available() -> bool:
+        """Check if the LLVM C API backend is functional on this system."""
+        return is_available()
+
+    @staticmethod
+    def subprocess_available() -> bool:
+        """Check if the llvm-mc binary is available on this system."""
+        return find_llvm_mc() is not None
+
+    @classmethod
+    def resolve_backend(cls) -> BackendType:
+        """Read the currently active backend (forced or auto-detected).
+
+        Raises RuntimeError if no backend is available.
+        """
+        if cls.default_backend:
+            # If forced globally (e.g. via pytest flag), verify it works
+            if cls.default_backend == "capi" and not cls.capi_available():
+                raise RuntimeError("C API backend requested but libLLVM not found")
+            if cls.default_backend == "subprocess" and not cls.subprocess_available():
+                raise RuntimeError("subprocess backend requested but llvm-mc not found")
+            return cls.default_backend
+        
+        if cls._resolved_default is None:
+            if cls.capi_available():
+                cls._resolved_default = "capi"
+            elif cls.subprocess_available():
+                cls._resolved_default = "subprocess"
+            else:
+                raise RuntimeError(
+                    "No assembler backend found. Install LLVM (libLLVM + llvm-mc).\n"
+                    "  macOS: brew install llvm\n"
+                    "  Linux: apt install llvm"
+                )
+                
+        return cls._resolved_default
+
     triple: str
     cpu: str
     features: str
     preamble: str
     llvm_mc: str
-    backend: str
+    backend: BackendType
 
     def __init__(
         self,
@@ -271,7 +314,7 @@ class Assembler:
         features: str = "",
         preamble: str | None = None,
         llvm_mc: str = "",
-        backend: str | None = None,
+        backend: BackendType | None = None,
     ) -> None:
         self.triple = triple
         self.cpu = cpu
@@ -281,36 +324,38 @@ class Assembler:
         # Count preamble lines for error line-number adjustment
         self._preamble_lines = self.preamble.count("\n") + 1 if self.preamble else 0
 
-        # Thread-safe LRU cache: source -> bytes
-        self._cache: OrderedDict[str, bytes] = OrderedDict()
-        self._cache_maxsize = 4096
-        self._lock = threading.Lock()
+        # Backend selection
+        # 1. Use explicit backend if passed to constructor
 
-        # C API backend (65x faster) — uses LLVMContextSetDiagnosticHandler
-        # to intercept errors instead of letting LLVM call exit().
-        self._capi: LlvmCApiBackend | None = None
-        if backend != "subprocess":
+        # 2. Use global default (e.g. from pytest --backend)
+        # 3. Auto-detect (C API preferred)
+        requested = backend or Assembler.default_backend
+        
+        self._capi: Any = None
+        if requested == "capi":
             self._capi = try_create_backend(triple, cpu, features)
-            if backend == "capi" and self._capi is None:
-                raise RuntimeError(
-                    "C API backend requested but libLLVM not available"
-                )
-
-        self.backend = "capi" if self._capi is not None else "subprocess"
-
-        if not llvm_mc:
-            found = find_llvm_mc()
-            if found is None and self._capi is None:
-                raise FileNotFoundError(
-                    "llvm-mc not found. Install LLVM or pass llvm_mc= path.\n"
-                    "  macOS:  brew install llvm\n"
-                    "  Linux:  apt install llvm"
-                )
-            self.llvm_mc = found or ""
-        elif not Path(llvm_mc).is_file():
-            raise FileNotFoundError(f"llvm-mc not found at: {llvm_mc}")
+            if not self._capi:
+                raise RuntimeError(f"C API backend failed for {triple}")
+            self.backend = "capi"
+        elif requested == "subprocess":
+            self.backend = "subprocess"
         else:
-            self.llvm_mc = llvm_mc
+            # Auto-detect: Prefer C API
+            self._capi = try_create_backend(triple, cpu, features)
+            if self._capi:
+                self.backend = "capi"
+            elif self.subprocess_available():
+                self.backend = "subprocess"
+            else:
+                raise RuntimeError(f"No assembler backend found for {triple}")
+
+        # Set the llvm-mc path (used for execution or diagnostics)
+        self.llvm_mc = llvm_mc or find_llvm_mc() or ""
+        if self.backend == "subprocess" and not self.llvm_mc:
+             raise FileNotFoundError("llvm-mc not found for subprocess backend")
+        
+        if self.llvm_mc and not Path(self.llvm_mc).is_file() and not shutil.which(self.llvm_mc):
+            raise FileNotFoundError(f"llvm-mc not found at: {self.llvm_mc}")
 
         # Pre-build the subprocess command
         cmd = []
@@ -340,24 +385,24 @@ class Assembler:
     # -- Architecture profiles (match nyxstone shorthand names) --------------
 
     @classmethod
-    def armv6m(cls, **kw: str) -> "Assembler":
+    def armv6m(cls, **kw: Any) -> "Assembler":
         """ARMv6-M (Cortex-M0/M0+). Thumb-1 only, no FPU."""
         return cls("armv6m-none-eabi", cpu="", features="", **kw)
 
     @classmethod
-    def armv7m(cls, **kw: str) -> "Assembler":
+    def armv7m(cls, **kw: Any) -> "Assembler":
         """ARMv7-M (Cortex-M3/M4/M7). Thumb-2, no FPU by default."""
         return cls("armv7m-none-eabi", cpu="", features="", **kw)
 
     @classmethod
-    def armv8m(cls, **kw: str) -> "Assembler":
+    def armv8m(cls, **kw: Any) -> "Assembler":
         """ARMv8-M Mainline (Cortex-M33/M55). Thumb-2 + TrustZone."""
         return cls("armv8m.main-none-eabi", cpu="", features="", **kw)
 
     # -- ARM Cortex-M profiles (with specific CPU/FPU) ---------------------
 
     @classmethod
-    def cortex_m7_sp(cls, **kw: str) -> "Assembler":
+    def cortex_m7_sp(cls, **kw: Any) -> "Assembler":
         """Cortex-M7 with FPv5-SP-D16 (single precision only).
 
         Rejects .f64 instructions at assembly time.  Equivalent to
@@ -371,7 +416,7 @@ class Assembler:
         )
 
     @classmethod
-    def cortex_m7_dp(cls, **kw: str) -> "Assembler":
+    def cortex_m7_dp(cls, **kw: Any) -> "Assembler":
         """Cortex-M7 with FPv5-D16 (single + double precision).
 
         Equivalent to ``arm-none-eabi-as -mcpu=cortex-m7 -mfpu=fpv5-d16``.
@@ -384,7 +429,7 @@ class Assembler:
         )
 
     @classmethod
-    def cortex_m4(cls, **kw: str) -> "Assembler":
+    def cortex_m4(cls, **kw: Any) -> "Assembler":
         """Cortex-M4 with FPv4-SP (single precision only).
 
         Equivalent to ``arm-none-eabi-as -mcpu=cortex-m4 -mfpu=fpv4-sp-d16``.
@@ -397,7 +442,7 @@ class Assembler:
         )
 
     @classmethod
-    def cortex_m33(cls, **kw: str) -> "Assembler":
+    def cortex_m33(cls, **kw: Any) -> "Assembler":
         """Cortex-M33: ARMv8-M Mainline + FPv5-SP + DSP + TrustZone.
 
         Equivalent to ``arm-none-eabi-as -mcpu=cortex-m33 -mfpu=fpv5-sp-d16``.
@@ -410,7 +455,7 @@ class Assembler:
         )
 
     @classmethod
-    def cortex_m0(cls, **kw: str) -> "Assembler":
+    def cortex_m0(cls, **kw: Any) -> "Assembler":
         """Cortex-M0/M0+: Thumb (v6-M), no Thumb-2, no FPU.
 
         Equivalent to ``arm-none-eabi-as -mcpu=cortex-m0``.
@@ -425,12 +470,12 @@ class Assembler:
     # -- x86 profiles ------------------------------------------------------
 
     @classmethod
-    def x86_64(cls, **kw: str) -> "Assembler":
+    def x86_64(cls, **kw: Any) -> "Assembler":
         """x86-64 with Intel syntax."""
         return cls("x86_64", cpu="", features="", **kw)
 
     @classmethod
-    def x86_32(cls, **kw: str) -> "Assembler":
+    def x86_32(cls, **kw: Any) -> "Assembler":
         """x86 32-bit with Intel syntax."""
         return cls("i686", cpu="", features="", **kw)
 
@@ -440,7 +485,7 @@ class Assembler:
     # -- AArch64 profiles --------------------------------------------------
 
     @classmethod
-    def aarch64(cls, **kw: str) -> "Assembler":
+    def aarch64(cls, **kw: Any) -> "Assembler":
         """AArch64 (ARMv8-A 64-bit)."""
         return cls("aarch64", cpu="", features="", **kw)
 
@@ -448,9 +493,12 @@ class Assembler:
 
     def _run(self, source: str) -> bytes:
         """Assemble source text, return raw .text bytes."""
-        if self._capi is not None:
+        if self.backend == "capi":
             return self._run_capi(source)
-        return self._run_subprocess(source)
+        if self.backend == "subprocess":
+            return self._run_subprocess(source)
+
+        raise AsmError(f"Unknown backend: {self.backend}")
 
     def _run_capi(self, source: str) -> bytes:
         """Assemble via in-process LLVM C API (~0.2ms/call).
@@ -485,10 +533,6 @@ class Assembler:
     def asm(self, source: str) -> bytes:
         """Assemble one or more instructions.
 
-        Thread-safe.  Results are cached (LRU, up to 4096 entries) —
-        identical source strings return the same bytes without
-        re-invoking llvm-mc.
-
         Parameters
         ----------
         source:
@@ -513,11 +557,6 @@ class Assembler:
         AsmError
             If assembly fails.
         """
-        with self._lock:
-            if source in self._cache:
-                self._cache.move_to_end(source)
-                return self._cache[source]
-
         # Normalize bare semicolons -> newlines (preserve quoted/commented)
         text = _split_semicolons(source)
 
@@ -527,22 +566,4 @@ class Assembler:
         parts.append(text)
         full = "\n".join(parts) + "\n"
 
-        code = self._run(full)
-
-        with self._lock:
-            self._cache[source] = code
-            if len(self._cache) > self._cache_maxsize:
-                self._cache.popitem(last=False)
-
-        return code
-
-    @property
-    def cache_size(self) -> int:
-        """Number of cached assembly results."""
-        with self._lock:
-            return len(self._cache)
-
-    def cache_clear(self) -> None:
-        """Clear the assembly result cache."""
-        with self._lock:
-            self._cache.clear()
+        return self._run(full)

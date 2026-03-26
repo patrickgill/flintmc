@@ -1,7 +1,7 @@
 [project]
 name = "flintmc"
 version = "0.2.0"
-description = "Multi-architecture assembler backed by llvm-mc"
+description = "LLVM-backed multi-architecture assembler for Python"
 requires-python = ">=3.10"
 dependencies = []
 
@@ -12,12 +12,12 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
     "pytest>=9.0.2",
 ]
 compat = [
-    "keystone-engine>=0.9.2",
+    # "keystone-engine>=0.9.2",
     # "nyxstone>=0.1.0",  # needs LLVM 15-18 and manual build flags:
                         # NYXSTONE_LLVM_PREFIX=/opt/homebrew/opt/llvm@18 \
                         # CXXFLAGS="-std=c++17" \

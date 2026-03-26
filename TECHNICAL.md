@@ -23,10 +23,11 @@ flintmc has two assembly backends. The default is auto-detected at construction 
 The backend can be forced explicitly:
 
 ```python
-Assembler.x86_64(backend="capi")        # force C API
-Assembler.x86_64(backend="subprocess")  # force subprocess
-Assembler.x86_64()                      # auto-detect (C API if available)
+Assembler.default_backend = "subprocess"  # force globally
+Assembler.x86_64(backend="capi")        # force per-instance
 ```
+
+In `pytest`, use the `--backend` flag to toggle.
 
 ## C API Pipeline
 
@@ -134,28 +135,15 @@ Auto-detected from the triple in `_default_preamble()`. Override with `preamble=
 - Detects comment markers (`@`, `#`, `//`) — semicolons after comments are preserved
 - Only bare semicolons between instructions are converted to newlines
 
-## Caching
-
-`Assembler.asm()` maintains a thread-safe LRU cache (`OrderedDict` + `threading.Lock`):
-
-- Cache key: the raw source string
-- Cache value: assembled `bytes`
-- Max size: 4096 entries
-- Eviction: LRU (oldest-accessed entry removed when full)
-- Thread safety: lock acquired for cache lookup and insertion; the actual assembly (subprocess or C API call) runs outside the lock
-
-Cache hits return the same `bytes` object (identity, not just equality).
-
 ## Thread Safety
 
-- **Cache**: Protected by `threading.Lock` in `Assembler`. Lookup and insertion are serialized; assembly runs unlocked.
 - **C API backend**: All LLVM calls are serialized behind a `threading.Lock` in `LlvmCApiBackend`. LLVM contexts are not thread-safe — concurrent module creation/emit will segfault without serialization.
 - **Subprocess backend**: Inherently safe — each call is an independent process.
 - **Diagnostic handler**: Errors are collected into a list that's protected by the same lock that serializes C API calls. The callback runs inside `LLVMTargetMachineEmitToMemoryBuffer()`, which is already holding the lock.
 
 ## Thumb Encoding Width
 
-The C API backend and subprocess backend produce identical encodings for the same source. Both use LLVM's inline asm path, which does not run `MCAssembler::relaxInstruction()` (the Thumb narrow-encoding relaxation pass). The standalone `llvm-mc` tool does run this pass, so its output may differ for some Thumb instructions.
+The C API backend and subprocess backend produce identical encodings for the same source. Both use LLVM's inline asm path, which does not run `MCAssembler::relaxInstruction()` (the Thumb narrow-encoding relaxation pass).
 
 In practice this means `mov r0, #42` emits as `mov.w` (4 bytes) rather than `movs` (2 bytes). Use the explicit narrow mnemonic (`movs`) when size matters. This matches keystone's behavior — both flintmc and keystone produce identical encoding widths for the same mnemonics.
 

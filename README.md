@@ -100,8 +100,6 @@ except AsmError as e:
 
 Force a backend with `backend="capi"` or `backend="subprocess"`.
 
-Results are cached (thread-safe LRU) — repeated assembly of the same source string is free.
-
 ## LLVM compatibility
 
 Tested on **LLVM 22.1.1** (Homebrew, macOS ARM64).
