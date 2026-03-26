@@ -103,6 +103,9 @@ def _default_preamble(triple: str) -> str:
     t = triple.lower()
     if t.startswith("thumb"):
         return ".syntax unified\n.thumb"
+    # armv*m triples are M-profile (Thumb only, no ARM mode)
+    if t.startswith("armv") and "m" in t.split("-")[0]:
+        return ".syntax unified\n.thumb"
     if t.startswith("arm"):
         return ".syntax unified\n.arm"
     if "x86_64" in t or "x86-64" in t:
@@ -334,7 +337,24 @@ class Assembler:
         """Shorthand for ``asm(source)``."""
         return self.asm(source)
 
-    # -- ARM Cortex-M profiles ---------------------------------------------
+    # -- Architecture profiles (match nyxstone shorthand names) --------------
+
+    @classmethod
+    def armv6m(cls, **kw: str) -> "Assembler":
+        """ARMv6-M (Cortex-M0/M0+). Thumb-1 only, no FPU."""
+        return cls("armv6m-none-eabi", cpu="", features="", **kw)
+
+    @classmethod
+    def armv7m(cls, **kw: str) -> "Assembler":
+        """ARMv7-M (Cortex-M3/M4/M7). Thumb-2, no FPU by default."""
+        return cls("armv7m-none-eabi", cpu="", features="", **kw)
+
+    @classmethod
+    def armv8m(cls, **kw: str) -> "Assembler":
+        """ARMv8-M Mainline (Cortex-M33/M55). Thumb-2 + TrustZone."""
+        return cls("armv8m.main-none-eabi", cpu="", features="", **kw)
+
+    # -- ARM Cortex-M profiles (with specific CPU/FPU) ---------------------
 
     @classmethod
     def cortex_m7_sp(cls, **kw: str) -> "Assembler":
@@ -410,9 +430,12 @@ class Assembler:
         return cls("x86_64", cpu="", features="", **kw)
 
     @classmethod
-    def i686(cls, **kw: str) -> "Assembler":
+    def x86_32(cls, **kw: str) -> "Assembler":
         """x86 32-bit with Intel syntax."""
         return cls("i686", cpu="", features="", **kw)
+
+    # Alias
+    i686 = x86_32
 
     # -- AArch64 profiles --------------------------------------------------
 
