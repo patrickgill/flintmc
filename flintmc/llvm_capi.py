@@ -93,7 +93,7 @@ def _declare_argtypes(lib: ctypes.CDLL) -> None:
     lib.LLVMContextSetDiagnosticHandler.argtypes = [VP, DIAG_HANDLER, ctypes.c_void_p]
 
     # Diagnostic info
-    lib.LLVMGetDiagInfoDescription.restype = CSTR
+    lib.LLVMGetDiagInfoDescription.restype = VP
     lib.LLVMGetDiagInfoDescription.argtypes = [VP]
     lib.LLVMGetDiagInfoSeverity.restype = ctypes.c_int
     lib.LLVMGetDiagInfoSeverity.argtypes = [VP]
@@ -138,7 +138,7 @@ def _declare_argtypes(lib: ctypes.CDLL) -> None:
     lib.LLVMDisposeMemoryBuffer.restype = None
     lib.LLVMDisposeMemoryBuffer.argtypes = [VP]
     lib.LLVMDisposeMessage.restype = None
-    lib.LLVMDisposeMessage.argtypes = [CSTR]
+    lib.LLVMDisposeMessage.argtypes = [VP]
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +222,7 @@ class LlvmCApiBackend:
         rc = lib.LLVMGetTargetFromTriple(self._triple, ctypes.byref(target), ctypes.byref(err))
         if rc != 0:
             msg = err.value.decode() if err.value else "unknown target"
+            lib.LLVMDisposeMessage(err)
             lib.LLVMContextDispose(self._ctx)
             raise RuntimeError(f"LLVM target lookup failed for '{triple}': {msg}")
 
@@ -240,8 +241,13 @@ class LlvmCApiBackend:
         """
         severity = self._lib.LLVMGetDiagInfoSeverity(info)
         if severity == LLVMDSError:
-            desc = self._lib.LLVMGetDiagInfoDescription(info)
-            msg = desc.decode() if desc else "unknown error"
+            desc_ptr = self._lib.LLVMGetDiagInfoDescription(info)
+            if desc_ptr:
+                desc_bytes = ctypes.cast(desc_ptr, CSTR).value
+                msg = desc_bytes.decode() if desc_bytes else "unknown error"
+                self._lib.LLVMDisposeMessage(desc_ptr)
+            else:
+                msg = "unknown error"
             self._errors.append(msg)
 
     def asm(self, source: str) -> bytes:
@@ -281,6 +287,7 @@ class LlvmCApiBackend:
 
             if rc != 0:
                 msg = err.value.decode() if err.value else "assembly failed"
+                lib.LLVMDisposeMessage(err)
                 lib.LLVMDisposeModule(mod)
                 raise RuntimeError(msg)
 
