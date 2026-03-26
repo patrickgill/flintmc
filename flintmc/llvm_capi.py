@@ -23,6 +23,7 @@ import ctypes
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 VP = ctypes.c_void_p
 BOOL = ctypes.c_int
@@ -92,65 +93,70 @@ def _declare_argtypes(lib: ctypes.CDLL) -> None:
     This is not optional. Without argtypes, ctypes assumes c_int for
     all arguments, truncating 64-bit pointers on LP64 platforms.
     """
+
+    def _get(name: str) -> Any:
+        fn = getattr(lib, name, None)
+        if fn is None:
+            raise RuntimeError(f"Required LLVM function '{name}' not found in library")
+        return fn
+
     # Context
-    lib.LLVMContextCreate.restype = VP
-    lib.LLVMContextCreate.argtypes = []
-    lib.LLVMContextDispose.restype = None
-    lib.LLVMContextDispose.argtypes = [VP]
-    lib.LLVMContextSetDiagnosticHandler.restype = None
-    lib.LLVMContextSetDiagnosticHandler.argtypes = [VP, DIAG_HANDLER, ctypes.c_void_p]
+    _get("LLVMContextCreate").restype = VP
+    _get("LLVMContextCreate").argtypes = []
+    _get("LLVMContextDispose").restype = None
+    _get("LLVMContextDispose").argtypes = [VP]
+    _get("LLVMContextSetDiagnosticHandler").restype = None
+    _get("LLVMContextSetDiagnosticHandler").argtypes = [VP, DIAG_HANDLER, ctypes.c_void_p]
 
     # Diagnostic info
-    # Returns char* allocated with malloc — must be freed with LLVMDisposeMessage.
-    # Use VP (not CSTR) to preserve the raw pointer for disposal.
-    lib.LLVMGetDiagInfoDescription.restype = VP
-    lib.LLVMGetDiagInfoDescription.argtypes = [VP]
-    lib.LLVMGetDiagInfoSeverity.restype = ctypes.c_int
-    lib.LLVMGetDiagInfoSeverity.argtypes = [VP]
+    _get("LLVMGetDiagInfoDescription").restype = VP
+    _get("LLVMGetDiagInfoDescription").argtypes = [VP]
+    _get("LLVMGetDiagInfoSeverity").restype = ctypes.c_int
+    _get("LLVMGetDiagInfoSeverity").argtypes = [VP]
 
     # Target lookup
-    lib.LLVMGetTargetFromTriple.restype = BOOL
-    lib.LLVMGetTargetFromTriple.argtypes = [CSTR, ctypes.POINTER(VP), ctypes.POINTER(CSTR)]
+    _get("LLVMGetTargetFromTriple").restype = BOOL
+    _get("LLVMGetTargetFromTriple").argtypes = [CSTR, ctypes.POINTER(VP), ctypes.POINTER(CSTR)]
 
     # Target machine
-    lib.LLVMCreateTargetMachine.restype = VP
-    lib.LLVMCreateTargetMachine.argtypes = [VP, CSTR, CSTR, CSTR, ctypes.c_int, ctypes.c_int, ctypes.c_int]
-    lib.LLVMDisposeTargetMachine.restype = None
-    lib.LLVMDisposeTargetMachine.argtypes = [VP]
+    _get("LLVMCreateTargetMachine").restype = VP
+    _get("LLVMCreateTargetMachine").argtypes = [VP, CSTR, CSTR, CSTR, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    _get("LLVMDisposeTargetMachine").restype = None
+    _get("LLVMDisposeTargetMachine").argtypes = [VP]
 
     # Data layout
-    lib.LLVMCreateTargetDataLayout.restype = VP
-    lib.LLVMCreateTargetDataLayout.argtypes = [VP]
-    lib.LLVMSetModuleDataLayout.restype = None
-    lib.LLVMSetModuleDataLayout.argtypes = [VP, VP]
-    lib.LLVMDisposeTargetData.restype = None
-    lib.LLVMDisposeTargetData.argtypes = [VP]
+    _get("LLVMCreateTargetDataLayout").restype = VP
+    _get("LLVMCreateTargetDataLayout").argtypes = [VP]
+    _get("LLVMSetModuleDataLayout").restype = None
+    _get("LLVMSetModuleDataLayout").argtypes = [VP, VP]
+    _get("LLVMDisposeTargetData").restype = None
+    _get("LLVMDisposeTargetData").argtypes = [VP]
 
     # Module (context-aware)
-    lib.LLVMModuleCreateWithNameInContext.restype = VP
-    lib.LLVMModuleCreateWithNameInContext.argtypes = [CSTR, VP]
-    lib.LLVMSetTarget.restype = None
-    lib.LLVMSetTarget.argtypes = [VP, CSTR]
-    lib.LLVMSetModuleInlineAsm2.restype = None
-    lib.LLVMSetModuleInlineAsm2.argtypes = [VP, CSTR, SZ]
-    lib.LLVMDisposeModule.restype = None
-    lib.LLVMDisposeModule.argtypes = [VP]
+    _get("LLVMModuleCreateWithNameInContext").restype = VP
+    _get("LLVMModuleCreateWithNameInContext").argtypes = [CSTR, VP]
+    _get("LLVMSetTarget").restype = None
+    _get("LLVMSetTarget").argtypes = [VP, CSTR]
+    _get("LLVMSetModuleInlineAsm2").restype = None
+    _get("LLVMSetModuleInlineAsm2").argtypes = [VP, CSTR, SZ]
+    _get("LLVMDisposeModule").restype = None
+    _get("LLVMDisposeModule").argtypes = [VP]
 
     # Emit
-    lib.LLVMTargetMachineEmitToMemoryBuffer.restype = BOOL
-    lib.LLVMTargetMachineEmitToMemoryBuffer.argtypes = [
+    _get("LLVMTargetMachineEmitToMemoryBuffer").restype = BOOL
+    _get("LLVMTargetMachineEmitToMemoryBuffer").argtypes = [
         VP, VP, ctypes.c_int, ctypes.POINTER(CSTR), ctypes.POINTER(VP)
     ]
 
     # Memory buffer
-    lib.LLVMGetBufferStart.restype = ctypes.POINTER(ctypes.c_char)
-    lib.LLVMGetBufferStart.argtypes = [VP]
-    lib.LLVMGetBufferSize.restype = SZ
-    lib.LLVMGetBufferSize.argtypes = [VP]
-    lib.LLVMDisposeMemoryBuffer.restype = None
-    lib.LLVMDisposeMemoryBuffer.argtypes = [VP]
-    lib.LLVMDisposeMessage.restype = None
-    lib.LLVMDisposeMessage.argtypes = [VP]
+    _get("LLVMGetBufferStart").restype = ctypes.POINTER(ctypes.c_char)
+    _get("LLVMGetBufferStart").argtypes = [VP]
+    _get("LLVMGetBufferSize").restype = SZ
+    _get("LLVMGetBufferSize").argtypes = [VP]
+    _get("LLVMDisposeMemoryBuffer").restype = None
+    _get("LLVMDisposeMemoryBuffer").argtypes = [VP]
+    _get("LLVMDisposeMessage").restype = None
+    _get("LLVMDisposeMessage").argtypes = [VP]
 
 
 # ---------------------------------------------------------------------------
@@ -179,22 +185,24 @@ def _arch_for_triple(triple: str) -> str | None:
     return None
 
 
-def _init_target(lib: ctypes.CDLL, arch: str) -> bool:
+def _init_target(lib: ctypes.CDLL, arch: str) -> None:
     with _init_lock:
         if arch in _initialized_arches:
-            return True
+            return
 
-        for suffix in ["TargetInfo", "Target", "AsmPrinter", "AsmParser", "TargetMC"]:
+        for suffix in ["TargetInfo", "AsmParser", "AsmPrinter", "Target", "TargetMC"]:
             name = f"LLVMInitialize{arch}{suffix}"
             fn = getattr(lib, name, None)
             if fn is None:
-                return False
+                raise RuntimeError(
+                    f"LLVM symbol '{name}' not found. "
+                    f"Is {arch} support enabled in your LLVM build?"
+                )
             fn.restype = None
             fn.argtypes = []
             fn()
 
         _initialized_arches.add(arch)
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +223,7 @@ class LlvmCApiBackend:
     """
 
     def __init__(self, lib: ctypes.CDLL, triple: str, cpu: str, features: str) -> None:
+        global _active_backends
         self._lib = lib
         self._triple = triple.encode()
 
@@ -243,15 +252,23 @@ class LlvmCApiBackend:
         )
         if not self._tm:
             lib.LLVMContextDispose(self._ctx)
-            raise RuntimeError(f"Failed to create TargetMachine for '{triple}'")
+            raise RuntimeError(f"LLVMCreateTargetMachine() failed for triple '{triple}'")
 
         # Performance fix: Reuse a single module for all calls. LLVMSetModuleInlineAsm2
         # overwrites existing assembly, avoiding the cost of per-call module creation.
         self._mod = lib.LLVMModuleCreateWithNameInContext(b"flintmc", self._ctx)
+        if not self._mod:
+            lib.LLVMContextDispose(self._ctx)
+            raise RuntimeError("LLVMModuleCreateWithNameInContext() failed to create module")
         lib.LLVMSetTarget(self._mod, self._triple)
 
         # Performance fix: Pre-create and set data layout once to avoid per-call setup cost.
         self._dl = lib.LLVMCreateTargetDataLayout(self._tm)
+        if not self._dl:
+            lib.LLVMDisposeTargetMachine(self._tm)
+            lib.LLVMDisposeModule(self._mod)
+            lib.LLVMContextDispose(self._ctx)
+            raise RuntimeError("LLVMCreateTargetDataLayout() failed")
         lib.LLVMSetModuleDataLayout(self._mod, self._dl)
 
     def _on_diagnostic(self, info: int, _ctx: int) -> None:
@@ -294,15 +311,18 @@ class LlvmCApiBackend:
         captured = list(self._errors)
         self._errors.clear()
 
-        if captured:
-            if rc == 0 and buf.value:
-                lib.LLVMDisposeMemoryBuffer(buf)
-            raise RuntimeError("\n".join(captured))
-
         if rc != 0:
             msg = err.value.decode() if err.value else "assembly failed"
             lib.LLVMDisposeMessage(err)
+            # Combine return-code error with any captured diagnostics
+            if captured:
+                msg = "\n".join(captured) + "\n" + msg
             raise RuntimeError(msg)
+
+        if captured:
+            if buf.value:
+                lib.LLVMDisposeMemoryBuffer(buf)
+            raise RuntimeError("\n".join(captured))
 
         start = lib.LLVMGetBufferStart(buf)
         sz = lib.LLVMGetBufferSize(buf)
@@ -312,6 +332,11 @@ class LlvmCApiBackend:
 
     def close(self) -> None:
         """Release the TargetMachine and context."""
+        global _active_backends
+        if self._tm or self._ctx:
+            with _init_lock:
+                _active_backends -= 1
+
         if self._tm:
             self._lib.LLVMDisposeTargetMachine(self._tm)
             self._tm = None
@@ -337,12 +362,9 @@ def try_create_backend(triple: str, cpu: str, features: str) -> LlvmCApiBackend 
 
     arch = _arch_for_triple(triple)
     if arch is None:
-        return None
+        raise RuntimeError(f"Unsupported or unknown architecture for triple: {triple}")
 
-    if not _init_target(lib, arch):
-        return None
+    _init_target(lib, arch)
 
-    try:
-        return LlvmCApiBackend(lib, triple, cpu, features)
-    except RuntimeError:
-        return None
+    # Propagate RuntimeError if target lookup/machine creation fails
+    return LlvmCApiBackend(lib, triple, cpu, features)
