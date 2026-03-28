@@ -1,10 +1,7 @@
 import glob
 import os
 import re
-import shutil
 import struct
-import sys
-from pathlib import Path
 from typing import Optional
 
 class AsmError(Exception):
@@ -13,37 +10,6 @@ class AsmError(Exception):
 class UnsupportedArchitectureError(AsmError):
     """Raised when the requested architecture is not supported."""
     pass
-
-_global_llvm_mc_path: Optional[str] = None
-
-def set_llvm_mc_path(path: str) -> None:
-    """Set a global path to the llvm-mc binary."""
-    global _global_llvm_mc_path
-    _global_llvm_mc_path = path
-
-def find_llvm_mc() -> str | None:
-    """Try to locate llvm-mc on the system."""
-    if _global_llvm_mc_path:
-        return _global_llvm_mc_path
-        
-    env_path = os.environ.get("LLVM_PATH")
-    if env_path:
-        mc_path = Path(env_path) / "bin" / ("llvm-mc.exe" if sys.platform == "win32" else "llvm-mc")
-        if mc_path.is_file():
-            return str(mc_path)
-
-    candidates = []
-    if sys.platform == "darwin":
-        candidates = ["/opt/homebrew/opt/llvm/bin/llvm-mc", "/usr/local/opt/llvm/bin/llvm-mc"]
-    elif sys.platform.startswith("linux"):
-        candidates = ["/usr/bin/llvm-mc", "/usr/lib/llvm/bin/llvm-mc"]
-        versioned = sorted(glob.glob("/usr/bin/llvm-mc-[0-9]*"), reverse=True)
-        candidates.extend(versioned)
-
-    for c in candidates:
-        if Path(c).is_file():
-            return c
-    return shutil.which("llvm-mc")
 
 _ELF_MAGIC = b"\x7fELF"
 

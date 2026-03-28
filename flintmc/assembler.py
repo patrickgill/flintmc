@@ -11,13 +11,10 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Literal, Optional
-import shutil
 
 from .common import (
     AsmError,
     UnsupportedArchitectureError,
-    find_llvm_mc,
-    set_llvm_mc_path,
     _extract_text,
     _fix_error,
     _split_semicolons,
@@ -28,7 +25,11 @@ from .llvm_capi import (
     set_libllvm_path,
     try_create_backend,
 )
-from .llvm_subprocess import LlvmSubprocessBackend
+from .llvm_subprocess import (
+    LlvmSubprocessBackend,
+    find_llvm_mc,
+    set_llvm_mc_path,
+)
 
 BackendType = Literal["capi", "subprocess"]
 
@@ -177,7 +178,7 @@ class Assembler:
         if (
             self.llvm_mc
             and not Path(self.llvm_mc).is_file()
-            and not shutil.which(self.llvm_mc)
+            # Explicitly not using shutil.which here as find_llvm_mc handles it
         ):
             raise FileNotFoundError(f"llvm-mc not found at: {self.llvm_mc}")
 

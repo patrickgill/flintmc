@@ -2,16 +2,23 @@
 
 __version__ = "0.2.1"
 
-import logging
-
-from .assembler import Assembler, AsmError, find_llvm_mc, set_libllvm_path, set_llvm_mc_path
+from .assembler import Assembler, AsmError
 from .common import UnsupportedArchitectureError
-from .llvm_capi import register_arch_mapping
+from .llvm_capi import register_arch_mapping, set_libllvm_path
+from .llvm_subprocess import find_llvm_mc, set_llvm_mc_path
 
-__all__ = ["Assembler", "AsmError", "UnsupportedArchitectureError", "find_llvm_mc", "set_libllvm_path", "set_llvm_mc_path", "register_arch_mapping", "asm", "default", "__version__"]
-
-# Configure silent-by-default logger
-logging.getLogger("flintmc").addHandler(logging.NullHandler())
+__all__ = [
+    "Assembler",
+    "AsmError",
+    "UnsupportedArchitectureError",
+    "find_llvm_mc",
+    "set_libllvm_path",
+    "set_llvm_mc_path",
+    "register_arch_mapping",
+    "asm",
+    "default",
+    "__version__",
+]
 
 default: Assembler | None = None
 
