@@ -416,9 +416,11 @@ class Assembler:
             (e.g. ``.syntax unified`` for ARM, ``.intel_syntax noprefix``
             for x86) is prepended automatically.
 
-            Semicolons inside quoted strings or after ``@``/``#`` comment
+            Semicolons inside quoted strings or after ``@``/``//`` comment
             markers are preserved — only bare semicolons between
-            instructions are treated as newlines.
+            instructions are treated as newlines.  ``#`` followed by
+            a digit or sign is treated as an immediate prefix (ARM/AArch64),
+            not a comment.
 
             Labels, literal pools, and all standard assembler directives
             are passed straight through to LLVM's MC layer.

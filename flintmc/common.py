@@ -168,7 +168,9 @@ def _default_preamble(triple: str) -> str:
         if t.startswith(prefix):
             return preamble
     # Built-in rules
-    if t.startswith("thumb") or (t.startswith("armv") and "m" in t.split("-")[0]): return ".syntax unified\n.thumb"
+    # Check for Cortex-M triples: armv6m, armv7m, armv8m.main, etc.
+    # Match "m" in the version part (after "armv"), not in "arm" itself.
+    if t.startswith("thumb") or (t.startswith("armv") and "m" in t.split("-")[0][4:]): return ".syntax unified\n.thumb"
     if t.startswith("arm") and not t.startswith("arm64"): return ".syntax unified\n.arm"
     if "x86_64" in t or "x86-64" in t: return ".intel_syntax noprefix"
     if "i686" in t or "i386" in t: return ".intel_syntax noprefix\n.code32"
