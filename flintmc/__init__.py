@@ -1,6 +1,6 @@
 """flintmc — LLVM-backed multi-architecture assembler for Python."""
 
-__version__ = "0.2.1"
+__version__ = "0.2.0"
 
 from .assembler import Assembler, AsmError
 from .common import UnsupportedArchitectureError

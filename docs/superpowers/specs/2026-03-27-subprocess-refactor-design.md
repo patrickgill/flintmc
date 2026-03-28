@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-27
 **Topic:** Refactor subprocess backend and consolidate common utilities.
-**Version:** 0.2.1
+**Version:** 0.2.0
 
 ## 1. Overview
 Currently, `flintmc/assembler.py` contains both the high-level API and the low-level `llvm-mc` subprocess logic, along with many utility functions shared across backends. This refactor extracts the subprocess logic into `flintmc/llvm_subprocess.py` and moves shared utilities and exceptions into `flintmc/common.py`.
@@ -11,7 +11,7 @@ Currently, `flintmc/assembler.py` contains both the high-level API and the low-l
 - Extract `llvm-mc` subprocess logic into its own module.
 - Centralize exceptions and utilities to avoid duplication and circular imports.
 - Maintain the current API for `Assembler` while simplifying its implementation.
-- Update project version to `0.2.1`.
+- Update project version to `0.2.0`.
 
 ## 3. Component Design
 
@@ -53,8 +53,8 @@ The main entry point:
     - `flintmc/common.py`: Definitive home for `AsmError`, `UnsupportedArchitectureError`, `find_llvm_mc`, and `set_llvm_mc_path`.
     - `flintmc/assembler.py`: Will import and re-export `AsmError`, `UnsupportedArchitectureError`, `find_llvm_mc`, and `set_llvm_mc_path`.
     - `flintmc/__init__.py`: Will continue to export these symbols from their new internal locations.
-- `flintmc/__init__.py`: Update `__version__` to `0.2.1`.
-- `pyproject.toml`: Update `version` to `0.2.1`.
+- `flintmc/__init__.py`: Update `__version__` to `0.2.0`.
+- `pyproject.toml`: Update `version` to `0.2.0`.
 
 ## 5. Verification Plan
 - Run existing tests: `pytest tests/`

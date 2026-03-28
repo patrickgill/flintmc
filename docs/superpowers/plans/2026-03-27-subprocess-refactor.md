@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Refactor the subprocess backend into its own module, consolidate shared utilities and exceptions into a common file, and update the project to version 0.2.1 while maintaining the existing public API.
+**Goal:** Refactor the subprocess backend into its own module, consolidate shared utilities and exceptions into a common file, and update the project to version 0.2.0 while maintaining the existing public API.
 
 **Architecture:** 
 1. Move exceptions, ELF parsing, and string helpers to `flintmc/common.py`.
@@ -279,7 +279,7 @@ git commit -m "refactor: simplify assembler.py and use new backends"
 - [ ] **Step 1: Update version and re-exports in `flintmc/__init__.py`**
 
 ```python
-__version__ = "0.2.1"
+__version__ = "0.2.0"
 from .assembler import Assembler, AsmError, find_llvm_mc, set_libllvm_path, set_llvm_mc_path
 from .common import UnsupportedArchitectureError
 # ... (rest of file)
@@ -296,5 +296,5 @@ Run: `pytest tests/ --backend=capi -v`
 
 ```bash
 git add flintmc/__init__.py pyproject.toml
-git commit -m "chore: bump version to 0.2.1"
+git commit -m "chore: bump version to 0.2.0"
 ```
