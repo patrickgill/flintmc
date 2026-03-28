@@ -234,9 +234,9 @@ class Assembler:
             parts.append(self.cpu)
         return f"Assembler({', '.join(parts)}, backend={self.backend})"
 
-    def __call__(self, source: str, *, address: int | None = None, symbols: dict[str, int] | None = None) -> bytes:
+    def __call__(self, source: str, *, address: int | None = None, symbols: dict[str, int] | None = None, verify: bool = False) -> bytes:
         """Shorthand for ``asm(source)``."""
-        return self.asm(source, address=address, symbols=symbols)
+        return self.asm(source, address=address, symbols=symbols, verify=verify)
 
     # -- Architecture profiles (match nyxstone shorthand names) --------------
 
@@ -430,7 +430,7 @@ class Assembler:
             lines.append(f".set {name}, {addr}")
         return "\n".join(lines)
 
-    def asm(self, source: str, *, address: int | None = None, symbols: dict[str, int] | None = None) -> bytes:
+    def asm(self, source: str, *, address: int | None = None, symbols: dict[str, int] | None = None, verify: bool = False) -> bytes:
         """Assemble one or more instructions.
 
         Thread-safe.  Results are cached (LRU, up to 4096 entries) —
@@ -473,6 +473,12 @@ class Assembler:
                 asm("bl handler", symbols={"handler": 0x80})
 
             Symbol names must match ``[A-Za-z_.][A-Za-z0-9_.$]*``.
+        verify:
+            If True, disassemble the output and re-assemble it to check
+            that the bytes round-trip.  Raises ``AsmError`` on mismatch.
+            Requires the C API backend (``libLLVM``).  Intended for
+            instructions only — data directives (``.byte``, ``.word``)
+            and literal pools won't round-trip.
 
         Returns
         -------
@@ -484,21 +490,50 @@ class Assembler:
             If assembly fails.
         """
         if address is not None or symbols:
-            return self._asm_at(source, address or 0, symbols)
+            code = self._asm_at(source, address or 0, symbols)
+        else:
+            with self._lock:
+                if source in self._cache:
+                    self._cache.move_to_end(source)
+                    cached = self._cache[source]
+                    if verify and cached:
+                        self._verify_round_trip(cached)
+                    return cached
 
-        with self._lock:
-            if source in self._cache:
-                self._cache.move_to_end(source)
-                return self._cache[source]
+            code = self._assemble(source)
 
-        code = self._assemble(source)
+            with self._lock:
+                self._cache[source] = code
+                if len(self._cache) > self._cache_maxsize:
+                    self._cache.popitem(last=False)
 
-        with self._lock:
-            self._cache[source] = code
-            if len(self._cache) > self._cache_maxsize:
-                self._cache.popitem(last=False)
+        if verify and code:
+            self._verify_round_trip(code)
 
         return code
+
+    def _verify_round_trip(self, code: bytes) -> None:
+        """Disassemble code and re-assemble to verify byte-level match."""
+        from .disassembler import Disassembler
+
+        if not hasattr(self._local, "_verifier"):
+            self._local._verifier = Disassembler(
+                self.triple, cpu=self.cpu, features=self.features,
+            )
+        dis = self._local._verifier
+        try:
+            instrs = dis.disasm(code)
+        except AsmError:
+            raise AsmError(
+                f"Verification failed: cannot disassemble output ({code.hex()})"
+            )
+        reassembled = self._assemble("\n".join(i.text for i in instrs))
+        if reassembled != code:
+            raise AsmError(
+                f"Verification failed: round-trip mismatch.\n"
+                f"  original:    {code.hex()}\n"
+                f"  reassembled: {reassembled.hex()}"
+            )
 
     def _assemble(self, source: str) -> bytes:
         """Assemble source text without caching or address offset."""

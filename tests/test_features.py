@@ -453,3 +453,66 @@ class TestModuleLevel:
             assert flintmc.asm("nop") == b"\x90"
         finally:
             flintmc.default = saved
+
+
+# ---------------------------------------------------------------------------
+# verify=True (round-trip validation)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
+class TestVerify:
+    def test_x86_passes(self):
+        asm = Assembler.x86_64()
+        code = asm("nop; ret", verify=True)
+        assert code == b"\x90\xc3"
+
+    def test_aarch64_passes(self):
+        asm = Assembler.aarch64()
+        code = asm("mov x0, #42; ret", verify=True)
+        assert len(code) == 8
+
+    def test_arm_thumb_passes(self):
+        asm = Assembler.cortex_m7_dp()
+        code = asm("nop; bx lr", verify=True)
+        assert len(code) == 4
+
+    def test_empty_passes(self):
+        asm = Assembler.x86_64()
+        assert asm("", verify=True) == b""
+
+    def test_complex_x86(self):
+        asm = Assembler.x86_64()
+        code = asm("push rbp; mov rbp, rsp; pop rbp; ret", verify=True)
+        assert len(code) > 0
+
+    def test_via_call(self):
+        asm = Assembler.x86_64()
+        code = asm("nop", verify=True)
+        assert code == b"\x90"
+
+    def test_cached_result_also_verified(self):
+        asm = Assembler.x86_64()
+        asm("nop")  # prime the cache
+        # second call hits cache but verify still runs
+        code = asm("nop", verify=True)
+        assert code == b"\x90"
+
+    def test_with_symbols(self):
+        asm = Assembler.aarch64()
+        code = asm("mov x0, #val", symbols={"val": 0xFF}, verify=True)
+        assert len(code) == 4
+
+    def test_with_address(self):
+        asm = Assembler.x86_64()
+        code = asm("nop; ret", address=0x100, verify=True)
+        assert code == b"\x90\xc3"
+
+    def test_multi_instruction_x86(self):
+        asm = Assembler.x86_64()
+        code = asm("mov eax, 1; xor ecx, ecx; syscall", verify=True)
+        assert len(code) > 0
+
+    def test_riscv_passes(self):
+        asm = Assembler.riscv64()
+        code = asm("addi x1, x0, 42", verify=True)
+        assert len(code) == 4
