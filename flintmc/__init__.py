@@ -4,8 +4,14 @@ __version__ = "0.2.0"
 
 from .assembler import Assembler, AsmError
 from .common import UnsupportedArchitectureError
-from .llvm_capi import register_arch_mapping, set_libllvm_path
+from .llvm_capi import register_arch_mapping, set_libllvm_path as _set_libllvm_path
 from .llvm_subprocess import find_llvm_mc, set_llvm_mc_path
+
+
+def set_libllvm_path(path: str) -> None:
+    """Set the path to libLLVM, invalidating cached backend detection."""
+    _set_libllvm_path(path)
+    Assembler._resolved_default = None
 
 __all__ = [
     "Assembler",

@@ -13,34 +13,42 @@ class UnsupportedArchitectureError(AsmError):
 
 _ELF_MAGIC = b"\x7fELF"
 
+def _elf_endian(elf: bytes) -> str:
+    """Return struct format prefix based on ELF EI_DATA byte."""
+    ei_data = elf[5]
+    if ei_data == 1: return "<"
+    if ei_data == 2: return ">"
+    raise AsmError(f"unsupported ELF endianness (EI_DATA={ei_data})")
+
 def _extract_text(elf: bytes) -> bytes:
     if len(elf) < 6 or elf[:4] != _ELF_MAGIC:
         raise AsmError("llvm-mc did not produce valid ELF output")
+    endian = _elf_endian(elf)
     ei_class = elf[4]
-    if ei_class == 1: return _extract_text_elf32(elf)
-    if ei_class == 2: return _extract_text_elf64(elf)
+    if ei_class == 1: return _extract_text_elf32(elf, endian)
+    if ei_class == 2: return _extract_text_elf64(elf, endian)
     raise AsmError(f"unsupported ELF class: {ei_class}")
 
-def _extract_text_elf32(elf: bytes) -> bytes:
-    e_shoff = struct.unpack_from("<I", elf, 0x20)[0]
-    e_shentsize = struct.unpack_from("<H", elf, 0x2E)[0]
-    e_shnum = struct.unpack_from("<H", elf, 0x30)[0]
-    e_shstrndx = struct.unpack_from("<H", elf, 0x32)[0]
-    return _find_text(elf, e_shoff, e_shentsize, e_shnum, e_shstrndx, struct.Struct("<IIIIIIIIII"), 4, 5)
+def _extract_text_elf32(elf: bytes, e: str) -> bytes:
+    e_shoff = struct.unpack_from(f"{e}I", elf, 0x20)[0]
+    e_shentsize = struct.unpack_from(f"{e}H", elf, 0x2E)[0]
+    e_shnum = struct.unpack_from(f"{e}H", elf, 0x30)[0]
+    e_shstrndx = struct.unpack_from(f"{e}H", elf, 0x32)[0]
+    return _find_text(elf, e_shoff, e_shentsize, e_shnum, e_shstrndx, struct.Struct(f"{e}IIIIIIIIII"), 4, 5, e)
 
-def _extract_text_elf64(elf: bytes) -> bytes:
-    e_shoff = struct.unpack_from("<Q", elf, 0x28)[0]
-    e_shentsize = struct.unpack_from("<H", elf, 0x3A)[0]
-    e_shnum = struct.unpack_from("<H", elf, 0x3C)[0]
-    e_shstrndx = struct.unpack_from("<H", elf, 0x3E)[0]
-    return _find_text(elf, e_shoff, e_shentsize, e_shnum, e_shstrndx, struct.Struct("<IIQQQQIIQQ"), 4, 5)
+def _extract_text_elf64(elf: bytes, e: str) -> bytes:
+    e_shoff = struct.unpack_from(f"{e}Q", elf, 0x28)[0]
+    e_shentsize = struct.unpack_from(f"{e}H", elf, 0x3A)[0]
+    e_shnum = struct.unpack_from(f"{e}H", elf, 0x3C)[0]
+    e_shstrndx = struct.unpack_from(f"{e}H", elf, 0x3E)[0]
+    return _find_text(elf, e_shoff, e_shentsize, e_shnum, e_shstrndx, struct.Struct(f"{e}IIQQQQIIQQ"), 4, 5, e)
 
-def _find_text(elf, e_shoff, e_shentsize, e_shnum, e_shstrndx, shdr_struct, off_idx, size_idx):
+def _find_text(elf, e_shoff, e_shentsize, e_shnum, e_shstrndx, shdr_struct, off_idx, size_idx, e):
     strtab_shdr = shdr_struct.unpack_from(elf, e_shoff + e_shstrndx * e_shentsize)
     strtab_data = elf[strtab_shdr[off_idx] : strtab_shdr[off_idx] + strtab_shdr[size_idx]]
     for i in range(e_shnum):
         off = e_shoff + i * e_shentsize
-        name_off = struct.unpack_from("<I", elf, off)[0]
+        name_off = struct.unpack_from(f"{e}I", elf, off)[0]
         if strtab_data[name_off : name_off + 6] == b".text\x00":
             shdr = shdr_struct.unpack_from(elf, off)
             return elf[shdr[off_idx] : shdr[off_idx] + shdr[size_idx]]

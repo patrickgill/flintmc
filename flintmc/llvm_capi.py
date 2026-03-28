@@ -123,20 +123,23 @@ def _load_llvm() -> ctypes.CDLL | None:
             if platform == "linux":
                 # Versioned and multiarch paths for Linux
                 for base in ["/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu"]:
-                    # glob for libLLVM.so.N, libLLVM-N.so, etc.
-                    candidates.extend(glob.glob(f"{base}/libLLVM*.so*"))
+                    # Match monolithic libLLVM: libLLVM.so.N, libLLVM-N.so
+                    # Exclude component libraries like libLLVMCore.so
+                    candidates.extend(glob.glob(f"{base}/libLLVM.so*"))
+                    candidates.extend(glob.glob(f"{base}/libLLVM-[0-9]*.so*"))
 
         for path in candidates:
             p = Path(path)
             if p.exists() or (platform == "win32" and not p.is_absolute()):
                 try:
-                    _lib = ctypes.CDLL(path)
-                except OSError:
+                    lib = ctypes.CDLL(path)
+                    _declare_argtypes(lib)
+                except (OSError, RuntimeError):
+                    # OSError: library failed to load
+                    # RuntimeError: loaded but missing required symbols
+                    #   (e.g. a component library like libLLVMCore.so)
                     continue
-                
-                # Any error inside _declare_argtypes (like missing functions)
-                # should bubble up as it indicates a broken/incompatible install.
-                _declare_argtypes(_lib)
+                _lib = lib
                 return _lib
     return None
 
@@ -257,6 +260,9 @@ _TRIPLE_TO_ARCH = {
     "s390x": "SystemZ",
     "mips": "Mips",
     "loongarch64": "LoongArch",
+    "avr": "AVR",
+    "bpf": "BPF",
+    "msp430": "MSP430",
 }
 
 
