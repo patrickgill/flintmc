@@ -75,7 +75,7 @@ def _split_semicolons(source: str) -> str:
             ch = line[i]
             if in_block_comment:
                 if ch == "*" and i + 1 < n and line[i + 1] == "/": in_block_comment, i = False, i + 1
-            elif ch == '"': in_quote = not in_quote
+            elif ch in ('"', "'"): in_quote = not in_quote
             elif not in_quote:
                 if ch == "/" and i + 1 < n and line[i + 1] == "*": in_block_comment, i = True, i + 1
                 elif ch == ";": out.append(line[start:i]); start = i + 1
