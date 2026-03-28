@@ -22,7 +22,7 @@ ARM64 macOS, causing SIGSEGV. See research/llvm-capi-backend.py.
 import ctypes
 import ctypes.util
 import glob
-import logging
+# import logging
 import os
 import shutil
 import sys
@@ -33,7 +33,7 @@ from typing import Any
 
 from .common import AsmError, UnsupportedArchitectureError
 
-logger = logging.getLogger("flintmc")
+# logger = logging.getLogger("flintmc")
 
 VP = ctypes.c_void_p
 BOOL = ctypes.c_int
