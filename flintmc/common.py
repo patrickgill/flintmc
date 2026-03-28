@@ -9,6 +9,10 @@ class UnsupportedArchitectureError(AsmError):
     pass
 
 _ELF_MAGIC = b"\x7fELF"
+_MACHO_MAGIC_64 = b"\xcf\xfa\xed\xfe"  # 0xFEEDFACF little-endian
+_MACHO_MAGIC_32 = b"\xce\xfa\xed\xfe"  # 0xFEEDFACE little-endian
+_LC_SEGMENT_64 = 0x19
+_LC_SEGMENT = 0x01
 
 def _elf_endian(elf: bytes) -> str:
     """Return struct format prefix based on ELF EI_DATA byte."""
@@ -17,14 +21,23 @@ def _elf_endian(elf: bytes) -> str:
     if ei_data == 2: return ">"
     raise AsmError(f"unsupported ELF endianness (EI_DATA={ei_data})")
 
-def _extract_text(elf: bytes) -> bytes:
-    if len(elf) < 6 or elf[:4] != _ELF_MAGIC:
-        raise AsmError("llvm-mc did not produce valid ELF output")
-    endian = _elf_endian(elf)
-    ei_class = elf[4]
-    if ei_class == 1: return _extract_text_elf32(elf, endian)
-    if ei_class == 2: return _extract_text_elf64(elf, endian)
-    raise AsmError(f"unsupported ELF class: {ei_class}")
+def _extract_text(obj: bytes) -> bytes:
+    if len(obj) < 4:
+        raise AsmError("backend did not produce valid object output")
+    magic = obj[:4]
+    if magic == _ELF_MAGIC:
+        if len(obj) < 6:
+            raise AsmError("truncated ELF output")
+        endian = _elf_endian(obj)
+        ei_class = obj[4]
+        if ei_class == 1: return _extract_text_elf32(obj, endian)
+        if ei_class == 2: return _extract_text_elf64(obj, endian)
+        raise AsmError(f"unsupported ELF class: {ei_class}")
+    if magic == _MACHO_MAGIC_64:
+        return _extract_text_macho64(obj)
+    if magic == _MACHO_MAGIC_32:
+        return _extract_text_macho32(obj)
+    raise AsmError("backend did not produce valid ELF or Mach-O output")
 
 def _extract_text_elf32(elf: bytes, e: str) -> bytes:
     e_shoff = struct.unpack_from(f"{e}I", elf, 0x20)[0]
@@ -50,6 +63,51 @@ def _find_text(elf, e_shoff, e_shentsize, e_shnum, e_shstrndx, shdr_struct, off_
             shdr = shdr_struct.unpack_from(elf, off)
             return elf[shdr[off_idx] : shdr[off_idx] + shdr[size_idx]]
     raise AsmError("no .text section in llvm-mc output")
+
+def _extract_text_macho64(obj: bytes) -> bytes:
+    """Extract __text section from a 64-bit Mach-O object."""
+    # mach_header_64: magic(I) cputype(I) cpusubtype(I) filetype(I)
+    #                 ncmds(I) sizeofcmds(I) flags(I) reserved(I) = 32 bytes
+    ncmds = struct.unpack_from("<I", obj, 16)[0]
+    off = 32  # past mach_header_64
+    for _ in range(ncmds):
+        cmd, cmdsize = struct.unpack_from("<II", obj, off)
+        if cmd == _LC_SEGMENT_64:
+            # segment_command_64 is 72 bytes; nsects at offset 64
+            nsects = struct.unpack_from("<I", obj, off + 64)[0]
+            sect_off = off + 72
+            for _ in range(nsects):
+                sectname = obj[sect_off:sect_off + 16].rstrip(b"\x00")
+                if sectname == b"__text":
+                    # section_64: addr(Q) at +32, size(Q) at +40, offset(I) at +48
+                    size = struct.unpack_from("<Q", obj, sect_off + 40)[0]
+                    offset = struct.unpack_from("<I", obj, sect_off + 48)[0]
+                    return obj[offset:offset + size]
+                sect_off += 80  # section_64 is 80 bytes
+        off += cmdsize
+    raise AsmError("no __text section in Mach-O output")
+
+def _extract_text_macho32(obj: bytes) -> bytes:
+    """Extract __text section from a 32-bit Mach-O object."""
+    # mach_header: 28 bytes (no reserved field)
+    ncmds = struct.unpack_from("<I", obj, 16)[0]
+    off = 28
+    for _ in range(ncmds):
+        cmd, cmdsize = struct.unpack_from("<II", obj, off)
+        if cmd == _LC_SEGMENT:
+            # segment_command is 56 bytes; nsects at offset 48
+            nsects = struct.unpack_from("<I", obj, off + 48)[0]
+            sect_off = off + 56
+            for _ in range(nsects):
+                sectname = obj[sect_off:sect_off + 16].rstrip(b"\x00")
+                if sectname == b"__text":
+                    # section: addr(I) at +32, size(I) at +36, offset(I) at +40
+                    size = struct.unpack_from("<I", obj, sect_off + 36)[0]
+                    offset = struct.unpack_from("<I", obj, sect_off + 40)[0]
+                    return obj[offset:offset + size]
+                sect_off += 68  # section is 68 bytes
+        off += cmdsize
+    raise AsmError("no __text section in Mach-O output")
 
 _STDIN_LINE_RE = re.compile(r"<(?:stdin|inline asm)>:(\d+):")
 
@@ -79,7 +137,12 @@ def _split_semicolons(source: str) -> str:
             elif not in_quote:
                 if ch == "/" and i + 1 < n and line[i + 1] == "*": in_block_comment, i = True, i + 1
                 elif ch == ";": out.append(line[start:i]); start = i + 1
-                elif ch in ("@", "#") or (ch == "/" and i + 1 < n and line[i + 1] == "/"): break
+                # @  -> ARM line comment (always)
+                # // -> C-style line comment
+                # #  -> x86 AT&T line comment, but only when NOT followed
+                #       by a digit/sign (to avoid treating ARM/AArch64
+                #       immediate prefixes like #42 as comments)
+                elif ch == "@" or (ch == "/" and i + 1 < n and line[i + 1] == "/") or (ch == "#" and (i + 1 >= n or line[i + 1] not in "0123456789-+")): break
             i += 1
         out.append(line[start:])
     return "\n".join(out)
