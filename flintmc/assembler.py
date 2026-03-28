@@ -7,277 +7,29 @@ Uses the LLVM C API (via ctypes) for in-process assembly when libLLVM
 is available. Falls back to llvm-mc subprocess otherwise.
 """
 
-import glob
-import os
-import re
-import shutil
-import struct
-import subprocess
-import sys
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, List, Literal, Optional
+from typing import Any, Literal, Optional
+import shutil
 
+from .common import (
+    AsmError,
+    UnsupportedArchitectureError,
+    find_llvm_mc,
+    _extract_text,
+    _fix_error,
+    _split_semicolons,
+    _default_preamble,
+)
 from .llvm_capi import (
-    LlvmCApiBackend,
     is_available,
     set_libllvm_path,
     try_create_backend,
 )
+from .llvm_subprocess import LlvmSubprocessBackend
 
 BackendType = Literal["capi", "subprocess"]
-
-
-class AsmError(Exception):
-    """Assembly failed."""
-
-
-class UnsupportedArchitectureError(AsmError):
-    """Raised when the requested architecture is not supported by flintmc or the underlying LLVM build."""
-    pass
-
-
-# ---------------------------------------------------------------------------
-# ELF .text section extractor (32-bit and 64-bit)
-# ---------------------------------------------------------------------------
-
-_ELF_MAGIC = b"\x7fELF"
-
-
-def _extract_text(elf: bytes) -> bytes:
-    """Extract .text section bytes from an ELF object (32 or 64-bit)."""
-    if len(elf) < 6 or elf[:4] != _ELF_MAGIC:
-        raise AsmError("llvm-mc did not produce valid ELF output")
-
-    ei_class = elf[4]  # 1 = 32-bit, 2 = 64-bit
-    if ei_class == 1:
-        return _extract_text_elf32(elf)
-    elif ei_class == 2:
-        return _extract_text_elf64(elf)
-    else:
-        raise AsmError(f"unsupported ELF class: {ei_class}")
-
-
-def _extract_text_elf32(elf: bytes) -> bytes:
-    e_shoff = struct.unpack_from("<I", elf, 0x20)[0]
-    e_shentsize = struct.unpack_from("<H", elf, 0x2E)[0]
-    e_shnum = struct.unpack_from("<H", elf, 0x30)[0]
-    e_shstrndx = struct.unpack_from("<H", elf, 0x32)[0]
-    shdr_struct = struct.Struct("<IIIIIIIIII")  # 10 x uint32
-    return _find_text(
-        elf,
-        e_shoff,
-        e_shentsize,
-        e_shnum,
-        e_shstrndx,
-        shdr_struct,
-        off_idx=4,
-        size_idx=5,
-    )
-
-
-def _extract_text_elf64(elf: bytes) -> bytes:
-    e_shoff = struct.unpack_from("<Q", elf, 0x28)[0]
-    e_shentsize = struct.unpack_from("<H", elf, 0x3A)[0]
-    e_shnum = struct.unpack_from("<H", elf, 0x3C)[0]
-    e_shstrndx = struct.unpack_from("<H", elf, 0x3E)[0]
-    # ELF64 section header: name(4) type(4) flags(8) addr(8) offset(8) size(8) ...
-    shdr_struct = struct.Struct("<IIQQQQIIQQ")
-    return _find_text(
-        elf,
-        e_shoff,
-        e_shentsize,
-        e_shnum,
-        e_shstrndx,
-        shdr_struct,
-        off_idx=4,
-        size_idx=5,
-    )
-
-
-def _find_text(
-    elf: bytes,
-    e_shoff: int,
-    e_shentsize: int,
-    e_shnum: int,
-    e_shstrndx: int,
-    shdr_struct: struct.Struct,
-    off_idx: int,
-    size_idx: int,
-) -> bytes:
-    """Shared logic: walk section headers, find .text, return its contents.
-
-    Performance fix: Optimized to avoid full header list creation and use lazy unpacking.
-    Directly jumps to the string table and only parses individual section headers
-    until .text is found.
-    """
-    # Performance fix: Get string table header directly via e_shstrndx
-    strtab_shdr = shdr_struct.unpack_from(elf, e_shoff + e_shstrndx * e_shentsize)
-    strtab_off = strtab_shdr[off_idx]
-    strtab_size = strtab_shdr[size_idx]
-    strtab_data = elf[strtab_off : strtab_off + strtab_size]
-
-    for i in range(e_shnum):
-        off = e_shoff + i * e_shentsize
-        # Performance fix: sh_name is always the first 4 bytes of any Elf32/Elf64
-        # section header. We only unpack this first to check for ".text".
-        name_off = struct.unpack_from("<I", elf, off)[0]
-
-        # Performance fix: Check if this name matches ".text" (null-terminated)
-        # using a direct slice comparison which is faster than index/decode.
-        if strtab_data[name_off : name_off + 6] == b".text\x00":
-            shdr = shdr_struct.unpack_from(elf, off)
-            sec_off = shdr[off_idx]
-            sec_size = shdr[size_idx]
-            return elf[sec_off : sec_off + sec_size]
-
-    raise AsmError("no .text section in llvm-mc output")
-
-
-# ---------------------------------------------------------------------------
-# Preamble detection
-# ---------------------------------------------------------------------------
-
-
-def _default_preamble(triple: str) -> str:
-    """Return sensible default directives for a given LLVM triple."""
-    t = triple.lower()
-    if t.startswith("thumb"):
-        return ".syntax unified\n.thumb"
-    # armv*m triples are M-profile (Thumb only, no ARM mode)
-    if t.startswith("armv") and "m" in t.split("-")[0]:
-        return ".syntax unified\n.thumb"
-    if t.startswith("arm"):
-        return ".syntax unified\n.arm"
-    if "x86_64" in t or "x86-64" in t:
-        return ".intel_syntax noprefix"
-    if "i686" in t or "i386" in t:
-        return ".intel_syntax noprefix\n.code32"
-    # AArch64, RISC-V, MIPS, etc. — no special preamble needed
-    return ""
-
-
-# ---------------------------------------------------------------------------
-# Error line-number adjustment
-# ---------------------------------------------------------------------------
-
-# Matches both subprocess ("<stdin>:N:") and C API ("<inline asm>:N:") errors
-_STDIN_LINE_RE = re.compile(r"<(?:stdin|inline asm)>:(\d+):")
-
-
-def _split_semicolons(source: str) -> str:
-    """Replace bare semicolons with newlines, preserving quoted strings.
-
-    Handles double-quoted strings (``"hello;world"``) and line comments
-    starting with ``@``, ``#``, or ``//``.
-
-    Performance fix: Optimized single-pass implementation that avoids
-    multiple string allocations and redundant searches.
-    """
-    if ";" not in source:
-        return source
-
-    out: list[str] = []
-    in_block_comment = False
-    for line in source.split("\n"):
-        if ";" not in line and "/*" not in line and "*/" not in line:
-            out.append(line)
-            continue
-
-        start = 0
-        in_quote = False
-        i = 0
-        n = len(line)
-        while i < n:
-            ch = line[i]
-            if in_block_comment:
-                if ch == "*" and i + 1 < n and line[i + 1] == "/":
-                    in_block_comment = False
-                    i += 1
-            elif ch == '"':
-                in_quote = not in_quote
-            elif not in_quote:
-                if ch == "/" and i + 1 < n and line[i + 1] == "*":
-                    in_block_comment = True
-                    i += 1
-                elif ch == ";":
-                    out.append(line[start:i])
-                    start = i + 1
-                elif ch in ("@", "#") or (
-                    ch == "/" and i + 1 < n and line[i + 1] == "/"
-                ):
-                    # Stop at line comment start
-                    break
-            i += 1
-
-        # Append the rest of the line (including comment if we broke out)
-        out.append(line[start:])
-
-    return "\n".join(out)
-
-
-def _fix_error(stderr: str, preamble_lines: int) -> str:
-    """Adjust LLVM error line numbers to account for injected preamble."""
-    lines = []
-    for line in stderr.splitlines():
-        m = _STDIN_LINE_RE.match(line)
-        if m:
-            orig = int(m.group(1))
-            adjusted = max(1, orig - preamble_lines)
-            line = f"line {adjusted}:" + line[m.end() :]
-        lines.append(line)
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
-def find_llvm_mc() -> str | None:
-    """Try to locate llvm-mc on the system.
-
-    Order of preference:
-    1. LLVM_PATH environment variable (root of an LLVM installation)
-    2. Platform-specific installation paths
-    3. PATH via shutil.which
-    """
-    # 1. Check standard LLVM_PATH environment variable
-    env_path = os.environ.get("LLVM_PATH")
-    if env_path:
-        mc_path = (
-            Path(env_path)
-            / "bin"
-            / ("llvm-mc.exe" if sys.platform == "win32" else "llvm-mc")
-        )
-        if mc_path.is_file():
-            return str(mc_path)
-
-    candidates: list[str] = []
-    if sys.platform == "darwin":
-        candidates = [
-            "/opt/homebrew/opt/llvm/bin/llvm-mc",  # Apple Silicon Homebrew
-            "/usr/local/opt/llvm/bin/llvm-mc",  # Intel Homebrew
-        ]
-    elif sys.platform.startswith("linux"):
-        candidates = [
-            "/usr/bin/llvm-mc",
-            "/usr/lib/llvm/bin/llvm-mc",
-        ]
-        # Versioned LLVM installs: /usr/bin/llvm-mc-18, etc.
-        versioned = sorted(glob.glob("/usr/bin/llvm-mc-[0-9]*"), reverse=True)
-        candidates.extend(versioned)
-    elif sys.platform == "win32":
-        candidates = [
-            "C:\\Program Files\\LLVM\\bin\\llvm-mc.exe",
-            "C:\\Program Files (x86)\\LLVM\\bin\\llvm-mc.exe",
-        ]
-
-    for c in candidates:
-        if Path(c).is_file():
-            return c
-    return shutil.which("llvm-mc")
 
 
 class Assembler:
@@ -427,22 +179,6 @@ class Assembler:
             and not shutil.which(self.llvm_mc)
         ):
             raise FileNotFoundError(f"llvm-mc not found at: {self.llvm_mc}")
-
-        # Pre-build the subprocess command
-        cmd = []
-        if self.llvm_mc:
-            cmd = [
-                self.llvm_mc,
-                f"-triple={self.triple}",
-                "-filetype=obj",
-                "-o",
-                "-",
-            ]
-            if self.cpu:
-                cmd.append(f"-mcpu={self.cpu}")
-            if self.features:
-                cmd.append(f"-mattr={self.features}")
-        self._cmd = cmd
 
         # Eagerly validate configuration and backend availability
         try:
@@ -603,28 +339,16 @@ class Assembler:
             # This enables true concurrency as each thread has its own
             # LLVM context and doesn't wait on a global backend lock.
             backend = self._get_capi_backend()
-            elf = backend.asm(source)
-            return _extract_text(elf)
+            return backend.asm(source)
         except RuntimeError as exc:
             raise AsmError(_fix_error(str(exc), self._preamble_lines))
 
     def _run_subprocess(self, source: str) -> bytes:
-        """Assemble via llvm-mc subprocess."""
-        try:
-            result = subprocess.run(
-                self._cmd,
-                input=source.encode(),
-                capture_output=True,
-                timeout=10,
+        if not hasattr(self._local, "subprocess"):
+            self._local.subprocess = LlvmSubprocessBackend(
+                self.triple, self.cpu, self.features, self.llvm_mc
             )
-        except subprocess.TimeoutExpired:
-            raise AsmError("llvm-mc timed out (10s limit)")
-
-        if result.returncode != 0:
-            stderr = result.stderr.decode(errors="replace").strip()
-            raise AsmError(_fix_error(stderr, self._preamble_lines))
-
-        return _extract_text(result.stdout)
+        return self._local.subprocess.asm(source, self._preamble_lines)
 
     def asm(self, source: str) -> bytes:
         """Assemble one or more instructions.
@@ -671,7 +395,8 @@ class Assembler:
         parts.append(text)
         full = "\n".join(parts) + "\n"
 
-        code = self._run(full)
+        elf = self._run(full)
+        code = _extract_text(elf)
 
         with self._lock:
             self._cache[source] = code
