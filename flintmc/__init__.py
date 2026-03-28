@@ -3,7 +3,7 @@
 __version__ = "0.2.0"
 
 from .assembler import Assembler, AsmError
-from .common import UnsupportedArchitectureError
+from .common import UnsupportedArchitectureError, register_default_preamble
 from .llvm_capi import register_arch_mapping, set_libllvm_path as _set_libllvm_path
 from .llvm_subprocess import find_llvm_mc, set_llvm_mc_path
 
@@ -21,6 +21,7 @@ __all__ = [
     "set_libllvm_path",
     "set_llvm_mc_path",
     "register_arch_mapping",
+    "register_default_preamble",
     "asm",
     "default",
     "__version__",

@@ -84,8 +84,27 @@ def _split_semicolons(source: str) -> str:
         out.append(line[start:])
     return "\n".join(out)
 
+_PREAMBLE_OVERRIDES: dict[str, str] = {}
+
+def register_default_preamble(prefix: str, preamble: str) -> None:
+    """Register a default preamble for triples starting with *prefix*.
+
+    Example::
+
+        register_default_preamble("mycpu", ".option foo")
+        Assembler(triple="mycpu-none-elf")  # preamble=".option foo"
+
+    Overrides take precedence over the built-in rules.
+    """
+    _PREAMBLE_OVERRIDES[prefix.lower()] = preamble
+
 def _default_preamble(triple: str) -> str:
     t = triple.lower()
+    # User-registered overrides (longest prefix first)
+    for prefix, preamble in sorted(_PREAMBLE_OVERRIDES.items(), key=lambda x: len(x[0]), reverse=True):
+        if t.startswith(prefix):
+            return preamble
+    # Built-in rules
     if t.startswith("thumb") or (t.startswith("armv") and "m" in t.split("-")[0]): return ".syntax unified\n.thumb"
     if t.startswith("arm") and not t.startswith("arm64"): return ".syntax unified\n.arm"
     if "x86_64" in t or "x86-64" in t: return ".intel_syntax noprefix"
