@@ -30,6 +30,8 @@ import weakref
 from pathlib import Path
 from typing import Any
 
+from .common import AsmError, UnsupportedArchitectureError
+
 VP = ctypes.c_void_p
 BOOL = ctypes.c_int
 CSTR = ctypes.c_char_p
@@ -283,7 +285,6 @@ def _init_target(lib: ctypes.CDLL, arch: str) -> None:
             fn = getattr(lib, name, None)
             if fn is None:
                 raise UnsupportedArchitectureError(
-                raise UnsupportedArchitectureError(
                     f"LLVM symbol '{name}' not found. "
                     f"Is {arch} support enabled in your LLVM build?"
                 )
@@ -335,7 +336,6 @@ class LlvmCApiBackend:
             msg = err.value.decode() if err.value else "unknown target"
             lib.LLVMDisposeMessage(err)
             lib.LLVMContextDispose(self._ctx)
-            from .assembler import UnsupportedArchitectureError
             raise UnsupportedArchitectureError(f"LLVM target lookup failed for '{triple}': {msg}")
 
         self._tm = lib.LLVMCreateTargetMachine(
@@ -343,7 +343,6 @@ class LlvmCApiBackend:
         )
         if not self._tm:
             lib.LLVMContextDispose(self._ctx)
-            from .assembler import UnsupportedArchitectureError
             raise UnsupportedArchitectureError(f"Failed to create TargetMachine for '{triple}'")
 
         # Performance fix: Reuse a single module for all calls. LLVMSetModuleInlineAsm2
@@ -461,7 +460,6 @@ def try_create_backend(triple: str, cpu: str, features: str) -> LlvmCApiBackend 
 
     arch = _arch_for_triple(triple)
     if arch is None:
-        from .assembler import UnsupportedArchitectureError
         raise UnsupportedArchitectureError(f"Unsupported or unknown architecture for triple: {triple}")
 
     _init_target(lib, arch)
