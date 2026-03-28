@@ -166,7 +166,7 @@ def _split_semicolons(source: str) -> str:
                 # #  -> x86 AT&T line comment, but only when NOT followed
                 #       by a digit/sign (to avoid treating ARM/AArch64
                 #       immediate prefixes like #42 as comments)
-                elif ch == "@" or (ch == "/" and i + 1 < n and line[i + 1] == "/") or (ch == "#" and (i + 1 >= n or line[i + 1] not in "0123456789-+")): break
+                elif ch == "@" or (ch == "/" and i + 1 < n and line[i + 1] == "/") or (ch == "#" and (i + 1 >= n or line[i + 1] not in "0123456789-+(")): break
             i += 1
         out.append(line[start:])
     return "\n".join(out)
