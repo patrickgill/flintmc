@@ -20,15 +20,22 @@ from pathlib import Path
 from typing import Any, List, Literal, Optional
 
 from .llvm_capi import (
-    AsmError,
     LlvmCApiBackend,
-    UnsupportedArchitectureError,
     is_available,
     set_libllvm_path,
     try_create_backend,
 )
 
 BackendType = Literal["capi", "subprocess"]
+
+
+class AsmError(Exception):
+    """Assembly failed."""
+
+
+class UnsupportedArchitectureError(AsmError):
+    """Raised when the requested architecture is not supported by flintmc or the underlying LLVM build."""
+    pass
 
 
 # ---------------------------------------------------------------------------

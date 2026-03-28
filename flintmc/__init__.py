@@ -2,9 +2,10 @@
 
 __version__ = "0.2.0"
 
-from .assembler import Assembler, AsmError, find_llvm_mc
+from .assembler import Assembler, AsmError, find_llvm_mc, set_libllvm_path
+from .llvm_capi import UnsupportedArchitectureError, register_arch_mapping
 
-__all__ = ["Assembler", "AsmError", "find_llvm_mc", "asm", "default", "__version__"]
+__all__ = ["Assembler", "AsmError", "UnsupportedArchitectureError", "find_llvm_mc", "set_libllvm_path", "register_arch_mapping", "asm", "default", "__version__"]
 
 default: Assembler | None = None
 

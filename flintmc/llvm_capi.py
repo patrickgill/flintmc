@@ -37,13 +37,6 @@ SZ = ctypes.c_size_t
 
 LLVMObjectFile = 1
 
-class AsmError(Exception):
-    """Assembly failed."""
-
-class UnsupportedArchitectureError(AsmError):
-    """Raised when the requested architecture is not supported by flintmc or the underlying LLVM build."""
-    pass
-
 # Diagnostic handler callback type: void(LLVMDiagnosticInfoRef, void*)
 DIAG_HANDLER = ctypes.CFUNCTYPE(None, VP, ctypes.c_void_p)
 
@@ -73,8 +66,6 @@ _lib: ctypes.CDLL | None = None
 _initialized_arches: set[str] = set()
 _init_lock = threading.Lock()
 _active_backends = 0
-
-_getattr = getattr
 
 
 def _load_llvm() -> ctypes.CDLL | None:
@@ -173,7 +164,7 @@ def _declare_argtypes(lib: ctypes.CDLL) -> None:
     """
 
     def _get(name: str) -> Any:
-        fn = _getattr(lib, name, None)
+        fn = getattr(lib, name, None)
         if fn is None:
             raise RuntimeError(f"Required LLVM function '{name}' not found in library")
         return fn
@@ -289,8 +280,9 @@ def _init_target(lib: ctypes.CDLL, arch: str) -> None:
 
         for suffix in ["TargetInfo", "AsmParser", "AsmPrinter", "Target", "TargetMC"]:
             name = f"LLVMInitialize{arch}{suffix}"
-            fn = _getattr(lib, name, None)
+            fn = getattr(lib, name, None)
             if fn is None:
+                raise UnsupportedArchitectureError(
                 raise UnsupportedArchitectureError(
                     f"LLVM symbol '{name}' not found. "
                     f"Is {arch} support enabled in your LLVM build?"
@@ -343,6 +335,7 @@ class LlvmCApiBackend:
             msg = err.value.decode() if err.value else "unknown target"
             lib.LLVMDisposeMessage(err)
             lib.LLVMContextDispose(self._ctx)
+            from .assembler import UnsupportedArchitectureError
             raise UnsupportedArchitectureError(f"LLVM target lookup failed for '{triple}': {msg}")
 
         self._tm = lib.LLVMCreateTargetMachine(
@@ -350,6 +343,7 @@ class LlvmCApiBackend:
         )
         if not self._tm:
             lib.LLVMContextDispose(self._ctx)
+            from .assembler import UnsupportedArchitectureError
             raise UnsupportedArchitectureError(f"Failed to create TargetMachine for '{triple}'")
 
         # Performance fix: Reuse a single module for all calls. LLVMSetModuleInlineAsm2
@@ -467,6 +461,7 @@ def try_create_backend(triple: str, cpu: str, features: str) -> LlvmCApiBackend 
 
     arch = _arch_for_triple(triple)
     if arch is None:
+        from .assembler import UnsupportedArchitectureError
         raise UnsupportedArchitectureError(f"Unsupported or unknown architecture for triple: {triple}")
 
     _init_target(lib, arch)
