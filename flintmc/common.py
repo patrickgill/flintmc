@@ -13,6 +13,8 @@ _MACHO_MAGIC_64 = b"\xcf\xfa\xed\xfe"  # 0xFEEDFACF little-endian
 _MACHO_MAGIC_32 = b"\xce\xfa\xed\xfe"  # 0xFEEDFACE little-endian
 _LC_SEGMENT_64 = 0x19
 _LC_SEGMENT = 0x01
+# COFF machine types that indicate a valid COFF object
+_COFF_MACHINES = {0x8664, 0x014c, 0xAA64, 0x01c4, 0x5064, 0x0200}
 
 def _elf_endian(elf: bytes) -> str:
     """Return struct format prefix based on ELF EI_DATA byte."""
@@ -37,7 +39,12 @@ def _extract_text(obj: bytes) -> bytes:
         return _extract_text_macho64(obj)
     if magic == _MACHO_MAGIC_32:
         return _extract_text_macho32(obj)
-    raise AsmError("backend did not produce valid ELF or Mach-O output")
+    # COFF has no single magic — check machine type in first 2 bytes
+    if len(obj) >= 20:
+        machine = struct.unpack_from("<H", obj, 0)[0]
+        if machine in _COFF_MACHINES:
+            return _extract_text_coff(obj)
+    raise AsmError("backend did not produce valid ELF, Mach-O, or COFF output")
 
 def _extract_text_elf32(elf: bytes, e: str) -> bytes:
     e_shoff = struct.unpack_from(f"{e}I", elf, 0x20)[0]
@@ -108,6 +115,23 @@ def _extract_text_macho32(obj: bytes) -> bytes:
                 sect_off += 68  # section is 68 bytes
         off += cmdsize
     raise AsmError("no __text section in Mach-O output")
+
+def _extract_text_coff(obj: bytes) -> bytes:
+    """Extract .text section from a COFF object."""
+    # COFF header: Machine(H), NumberOfSections(H), TimeDateStamp(I),
+    #              PointerToSymbolTable(I), NumberOfSymbols(I),
+    #              SizeOfOptionalHeader(H), Characteristics(H) = 20 bytes
+    nsections = struct.unpack_from("<H", obj, 2)[0]
+    opt_hdr_size = struct.unpack_from("<H", obj, 16)[0]
+    sect_start = 20 + opt_hdr_size
+    for i in range(nsections):
+        off = sect_start + i * 40
+        name = obj[off:off + 8].rstrip(b"\x00")
+        if name == b".text":
+            rawsize = struct.unpack_from("<I", obj, off + 16)[0]
+            rawptr = struct.unpack_from("<I", obj, off + 20)[0]
+            return obj[rawptr:rawptr + rawsize]
+    raise AsmError("no .text section in COFF output")
 
 _STDIN_LINE_RE = re.compile(r"<(?:stdin|inline asm)>:(\d+):")
 
