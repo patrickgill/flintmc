@@ -247,8 +247,8 @@ _TRIPLE_TO_ARCH = {
     "arm64": "AArch64",
     "riscv32": "RISCV",
     "riscv64": "RISCV",
-    "wasm32": "WebAssembly",
-    "wasm64": "WebAssembly",
+    # wasm32/wasm64 omitted: LLVM emits wasm binary format, not ELF/Mach-O/COFF,
+    # so _extract_text cannot parse the output.
     "ppc64": "PowerPC",
     "ppc64le": "PowerPC",
     "powerpc": "PowerPC",
