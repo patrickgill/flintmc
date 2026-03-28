@@ -16,7 +16,6 @@ from .llvm_capi import (
     _init_target,
     _arch_for_triple,
     _init_lock,
-    _initialized_arches,
     VP,
     CSTR,
     SZ,
@@ -101,6 +100,11 @@ class Disassembler:
         Use Intel syntax for x86 (default True).
     """
 
+    @staticmethod
+    def available() -> bool:
+        """Check if the disassembler is functional (requires libLLVM)."""
+        return _load_llvm() is not None
+
     def __init__(
         self,
         triple: str,
@@ -113,7 +117,10 @@ class Disassembler:
 
         lib = _load_llvm()
         if lib is None:
-            raise RuntimeError("libLLVM not found")
+            raise RuntimeError(
+                "Disassembler requires libLLVM (C API). "
+                "The subprocess backend does not support disassembly."
+            )
 
         if not _disasm_argtypes_declared:
             _declare_disasm_argtypes(lib)
@@ -151,7 +158,8 @@ class Disassembler:
                 )
 
             opts = _OPT_PRINT_IMM_HEX
-            if self._intel and "x86" in self.triple.lower() or "i686" in self.triple.lower() or "i386" in self.triple.lower():
+            t = self.triple.lower()
+            if self._intel and ("x86" in t or "i686" in t or "i386" in t):
                 opts |= _OPT_ASM_PRINTER_VARIANT
             self._lib.LLVMSetDisasmOptions(ctx, opts)
             self._local.ctx = ctx
@@ -207,6 +215,22 @@ class Disassembler:
             off += sz
 
         return results
+
+    def close(self) -> None:
+        """Release disassembler resources for the calling thread.
+
+        Safe to call multiple times.  After ``close()``, the disassembler
+        can still be used — a fresh context is created on the next call.
+        """
+        if hasattr(self._local, "ctx") and self._local.ctx:
+            self._lib.LLVMDisasmDispose(self._local.ctx)
+            del self._local.ctx
+
+    def __enter__(self) -> "Disassembler":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
 
     def __call__(self, code: bytes, *, address: int = 0) -> list[DisasmInstruction]:
         """Shorthand for ``disasm(code)``."""

@@ -111,9 +111,7 @@ class Assembler:
                 cls._resolved_default = "subprocess"
             else:
                 raise RuntimeError(
-                    "No assembler backend found. Install LLVM (libLLVM + llvm-mc).\n"
-                    "  macOS: brew install llvm\n"
-                    "  Linux: apt install llvm"
+                    "No assembler backend found: libLLVM not loadable and llvm-mc not in PATH"
                 )
 
         return cls._resolved_default
