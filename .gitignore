@@ -153,3 +153,7 @@ cython_debug/
 docs/superpowers/
 llvm_version_19_debian.txt
 llvm-mc_mac.txt
+
+# OS
+.DS_Store
+Thumbs.db
