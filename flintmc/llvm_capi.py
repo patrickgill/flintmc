@@ -353,8 +353,11 @@ class LlvmCApiBackend:
             lib.LLVMContextDispose(self._ctx)
             raise UnsupportedArchitectureError(f"Failed to create TargetMachine for '{triple}'")
 
-        # Performance fix: Reuse a single module for all calls. LLVMSetModuleInlineAsm2
-        # overwrites existing assembly, avoiding the cost of per-call module creation.
+        # Performance: Reuse a single module for all calls. LLVMSetModuleInlineAsm2
+        # replaces the inline asm string, avoiding per-call module creation.
+        # ASSUMPTION: The module contains no IR functions or globals — only the
+        # inline asm string — so no codegen state accumulates between emissions.
+        # If a future LLVM version changes this, fall back to per-call modules.
         self._mod = lib.LLVMModuleCreateWithNameInContext(b"flintmc", self._ctx)
         if not self._mod:
             lib.LLVMDisposeTargetMachine(self._tm)
