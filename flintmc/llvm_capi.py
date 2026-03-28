@@ -70,7 +70,6 @@ _LLVM_PATHS = {
 _lib: ctypes.CDLL | None = None
 _initialized_arches: set[str] = set()
 _init_lock = threading.Lock()
-_active_backends = 0
 
 
 def _load_llvm() -> ctypes.CDLL | None:
@@ -372,9 +371,6 @@ class LlvmCApiBackend:
             raise RuntimeError("LLVMCreateTargetDataLayout() failed")
         lib.LLVMSetModuleDataLayout(self._mod, self._dl)
 
-        with _init_lock:
-            _active_backends += 1
-
         # Register finalizer for automatic cleanup.
         self._finalizer = weakref.finalize(
             self, _dispose_resources, lib, self._ctx, self._tm, self._mod, self._dl
@@ -447,10 +443,6 @@ class LlvmCApiBackend:
 
 def _dispose_resources(lib: Any, ctx: int, tm: int, mod: int, dl: int) -> None:
     """Standalone cleanup function for LlvmCApiBackend."""
-    global _active_backends
-    with _init_lock:
-        _active_backends -= 1
-
     if tm:
         lib.LLVMDisposeTargetMachine(tm)
     if ctx:
