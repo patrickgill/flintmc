@@ -2,7 +2,7 @@
 
 __version__ = "0.2.0"
 
-from .assembler import Assembler, AsmError
+from .assembler import Assembler, AsmError, InstructionInfo
 from .common import UnsupportedArchitectureError, register_default_preamble
 from .llvm_capi import register_arch_mapping, set_libllvm_path as _set_libllvm_path
 from .llvm_subprocess import find_llvm_mc, set_llvm_mc_path
@@ -16,6 +16,7 @@ def set_libllvm_path(path: str) -> None:
 __all__ = [
     "Assembler",
     "AsmError",
+    "InstructionInfo",
     "UnsupportedArchitectureError",
     "find_llvm_mc",
     "set_libllvm_path",

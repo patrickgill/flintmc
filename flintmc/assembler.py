@@ -7,6 +7,7 @@ Uses the LLVM C API (via ctypes) for in-process assembly when libLLVM
 is available. Falls back to llvm-mc subprocess otherwise.
 """
 
+import dataclasses
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -30,6 +31,15 @@ from .llvm_subprocess import (
 )
 
 BackendType = Literal["capi", "subprocess"]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class InstructionInfo:
+    """A single assembled instruction with its position in the output."""
+    offset: int
+    size: int
+    code: bytes
+    source: str
 
 
 class Assembler:
@@ -457,6 +467,48 @@ class Assembler:
                 self._cache.popitem(last=False)
 
         return code
+
+    def asm_each(self, source: str) -> list[InstructionInfo]:
+        """Assemble and return per-instruction boundaries.
+
+        Each entry has ``.offset``, ``.size``, ``.code`` (bytes), and
+        ``.source`` (the input line).  Labels and directives are
+        accumulated as context but don't appear in the output list.
+
+        Uses cumulative assembly: assembles lines 1..N progressively
+        to determine where each instruction's bytes fall.  This
+        correctly handles labels and forward references.
+
+        Raises ``AsmError`` if any instruction fails to assemble.
+        """
+        text = _split_semicolons(source)
+        lines = [l.strip() for l in text.splitlines()]
+        lines = [l for l in lines if l]
+
+        preamble_parts = [self.preamble] if self.preamble else []
+        results: list[InstructionInfo] = []
+        prev_size = 0
+        accumulated: list[str] = []
+
+        for line in lines:
+            accumulated.append(line)
+            full = "\n".join(preamble_parts + accumulated) + "\n"
+            elf = self._run(full)
+            code = _extract_text(elf)
+            cur_size = len(code)
+
+            if cur_size > prev_size:
+                instr_bytes = code[prev_size:]
+                results.append(InstructionInfo(
+                    offset=prev_size,
+                    size=cur_size - prev_size,
+                    code=instr_bytes,
+                    source=line,
+                ))
+                prev_size = cur_size
+            # else: label, directive, or alignment — no new bytes
+
+        return results
 
     @property
     def cache_size(self) -> int:
