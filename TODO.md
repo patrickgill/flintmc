@@ -1,61 +1,51 @@
 # TODO
+## Architecture & Refactoring
 
-add testing guidance to the readme if it's not there, or update it
-add how to for the different backend testing
+- [ ] **Split Backends**: Move `subprocess` backend logic out of `assembler.py` into `subprocess_backend.py`.
+- [ ] **Direct Emission**: Investigate bypassing ELF generation to emit raw machine code directly from the MC layer for better performance.
+- [ ] **Extensibility**: Ensure the `Assembler` factory can easily accommodate future backends (e.g., Keystone/Capstone for round-tripping).
+- [ ] **Architecture Inference**: Improve `_arch_for_triple` to potentially handle unmapped triples by attempting to resolve symbols for common prefixes automatically.
 
+## API Enhancements
 
-# pytest
-[x] can we pass options to pytest instead of hardcoding?
-[x] find out how to run the tests on the llvm-mc subprocess backend too
-[x] tests should say which backend is being used (either C API or llvm-mc subprocess)
-it says other stuff at the top of the test so why not this
-there should be some structured way to do this
+- [ ] **Instruction Count**: Add `asm_info()` or update `asm()` to return a result object with `.bytes` and `.count` (instruction count).
+- [ ] **Big-Endian Support**: Update ELF parser to detect and handle Big-Endian objects (required for MIPS/PPC).
+- [ ] **Symbol Injection**: Allow users to provide a mapping of external symbols to addresses (similar to Nyxstone).
+- [ ] **Address-Aware Assembly**: Support base address (PC) for position-relative instructions.
+- [ ] **Round-trip validation**: Add an optional validation step that disassembles the output (via Capstone) to verify it matches the input mnemonic.
+- [ ] **`asm_each()`**: Return per-instruction boundaries (offset, size, bytes) for breakpoint placement and fine-grained binary analysis.
 
-think if there's other things to mention too
+## Profiles & Architectures
+...
+- [ ] **Dockerfile**: Finalize whether to keep the `Dockerfile` in the repo for consistent multi-distro testing.
+- [ ] **Logging**: Add a `logging` logger to record LLVM discovery steps and backend selection events.
 
+## Documentation
+- [ ] **Cortex-M Expansion**: `Assembler.cortex_m23()`, `Assembler.cortex_m55()`.
+- [ ] **Cortex-A Profiles**: `Assembler.armv7a()`, `Assembler.armv8a()`.
 
-# Dockerfile
-Keep Dockerfile or gitignore?
+## Platform & Discovery
 
-things wanted are
-Test different Ubuntu versions
-Test LLVM installation
-make sure the tests work on each
-Test different Python versions
+- [ ] **Windows Validation**: Verify the new `win32` discovery logic on a real Windows environment.
+- [ ] **Versioned Linux Discovery**: Refine the `glob` logic to prioritize the highest available version if multiple `libLLVM-N.so` are found.
+- [ ] **Dockerfile**: Finalize whether to keep the `Dockerfile` in the repo for consistent multi-distro testing.
 
-If we're testing LLVM 15-18 the Nyxstone tests can be done
+## Documentation
 
+- [ ] **README Update**:
+    - [ ] Document the `--backend` flag for `pytest`.
+    - [ ] Add technical details for `register_arch_mapping`.
+    - [ ] Add technical details for `set_libllvm_path`.
+    - [ ] Update Windows support status.
+- [ ] **Testing Guide**: Add a dedicated section on how to run cross-validation tests (GAS, Keystone, Nyxstone).
 
 ## Done
 
-- [x] x86 (32-bit) — `Assembler.i686()`, Intel syntax default
-- [x] x86_64 — `Assembler.x86_64()`, Intel syntax default
-- [x] AArch64 — `Assembler.aarch64()`
-- [x] 64-bit ELF support in `.text` extractor
-- [x] LLVM C API backend — auto-detected as default
-- [x] `LLVMContextSetDiagnosticHandler` error interception (no more `exit()`)
-- [x] Thread-safe C API (lock-serialized module creation/emit)
-- [x] Subprocess fallback when libLLVM unavailable
-- [x] CI testing for both backends (C API and subprocess)
-- [x] Visible backend status in pytest header
-
-## Open
-
-### Features
-
-- [ ] Round-trip validation: assemble then disassemble with Capstone, verify mnemonic matches
-- [ ] `asm_each()` returning per-instruction boundaries (offset, size, bytes) for breakpoint/end-address calculation
-
-### Profiles
-
-- [ ] RISC-V profiles
-- [ ] MIPS profiles
-- [ ] Cortex-M23 (ARMv8-M Baseline)
-- [ ] Cortex-M55 (ARMv8.1-M Mainline + MVE)
-- [ ] Cortex-A (ARMv7-A, ARMv8-A) for non-M use cases
-
-### Known limitations
-
-- **LLVM minimum version**: 7.0+ required for `LLVMSetModuleInlineAsm2`. Other functions we use date back to LLVM 3.5–3.9. Tested up to LLVM 22.x.
-- **ctypes argtypes**: ALL function `.argtypes` MUST be declared before calling. Without them, ctypes truncates 64-bit pointers on ARM64 macOS → SIGSEGV. Crash signature: `EXC_BAD_ACCESS at 0xfffffffff...`
-- **LLVM Context Isolation**: The C API backend reuses a single `LLVMModuleRef` and `LLVMTargetDataRef` for maximum performance. This makes the backend instance strictly serial and dependent on the `threading.Lock` in `Assembler` to prevent memory corruption.
+- [x] **Specific Error Reporting**: C API failures now report the exact LLVM function name and diagnostic string.
+- [x] **Unified Exception Hierarchy**: `AsmError` and `UnsupportedArchitectureError` are consolidated and exported.
+- [x] **Expanded Arch Mapping**: Support for WebAssembly, PowerPC, Sparc, SystemZ, Mips, LoongArch.
+- [x] **Windows Support**: Implementation of dynamic discovery for `LLVM-C.dll` and `llvm-mc.exe`.
+- [x] **Linux Discovery**: Robust search for versioned `libLLVM.so` using `glob` and multiarch paths.
+- [x] **True Concurrency**: Thread-Local Storage (TLS) for C API backends allows parallel assembly.
+- [x] **Resource Management**: Proactive finalization of LLVM objects and safe interpreter teardown.
+- [x] **Technical Documentation**: Comprehensive `TECHNICAL.md` and ecosystem `COMPARISON.md`.

@@ -33,7 +33,69 @@ asm = Assembler.aarch64()
 asm("mov x0, #42; ret")
 ```
 
-Multi-instruction with labels, literal pools, directives — all passed through to LLVM:
+## Real-world examples
+
+### 1. Generating Shellcode (Linux x64)
+Fast, in-process assembly for exploit development or dynamic code generation.
+
+```python
+from flintmc import Assembler
+
+x64 = Assembler.x86_64()
+payload = x64("""
+    xor rdi, rdi
+    mov al, 0x3c    # sys_exit
+    syscall
+""")
+# b'H1\xff\xb0<\x0f\x05'
+```
+
+### 2. Hot-patching ARM Firmware
+Replacing a function prologue with a hook. `flintmc` handles Thumb-2/ARM switching and unified syntax automatically.
+
+```python
+from flintmc import Assembler
+
+# Target: Cortex-M7 (Teensy 4.1, etc.)
+patcher = Assembler.cortex_m7_dp()
+
+# Assembler a jump to our hook function at 0x20001000
+# Note: LLVM-MC handles the PC-relative offset for you
+hook_addr = 0x20001000
+patch = patcher(f"ldr pc, ={hook_addr}\n.ltorg")
+```
+
+### 3. Kernel & Bootloader Directives
+Unlike basic assemblers, `flintmc` supports the full power of LLVM's `llvm-mc`, including data directives, alignment, and literal pools.
+
+```python
+asm = Assembler.x86_32()
+gdt_entry = asm("""
+    .word 0xFFFF    # Limit
+    .word 0x0000    # Base (low)
+    .byte 0x00      # Base (mid)
+    .byte 0x9A      # Access (exec/read)
+    .byte 0xCF      # Granularity
+    .byte 0x00      # Base (high)
+""")
+```
+
+### 4. Keystone-to-flintmc migration
+If you're coming from `keystone-engine`, the transition is usually just a few lines.
+
+```python
+# Before (Keystone):
+# from keystone import KS_ARCH_X86, KS_MODE_64, Ks
+# ks = Ks(KS_ARCH_X86, KS_MODE_64)
+# code, _ = ks.asm("mov rax, 1")
+
+# After (flintmc):
+from flintmc import Assembler
+asm = Assembler.x86_64()
+code = asm("mov rax, 1")
+```
+
+## Multi-instruction support
 
 ```python
 asm = Assembler.cortex_m7_dp()
