@@ -506,8 +506,9 @@ class Assembler:
         """Assemble and return per-instruction boundaries.
 
         Each entry has ``.offset``, ``.size``, ``.code`` (bytes), and
-        ``.source`` (the input line).  Labels and directives are
-        accumulated as context but don't appear in the output list.
+        ``.source`` (the input line).  Lines that produce no bytes
+        (labels, ``.equ``, etc.) are skipped.  Directives that emit
+        data (``.byte``, ``.align``, ``.ltorg``) DO appear.
 
         Uses cumulative assembly: assembles lines 1..N progressively
         to determine where each instruction's bytes fall.  This
