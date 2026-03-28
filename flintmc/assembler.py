@@ -8,6 +8,7 @@ is available. Falls back to llvm-mc subprocess otherwise.
 """
 
 import dataclasses
+import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -233,9 +234,9 @@ class Assembler:
             parts.append(self.cpu)
         return f"Assembler({', '.join(parts)}, backend={self.backend})"
 
-    def __call__(self, source: str, *, address: int | None = None) -> bytes:
+    def __call__(self, source: str, *, address: int | None = None, symbols: dict[str, int] | None = None) -> bytes:
         """Shorthand for ``asm(source)``."""
-        return self.asm(source, address=address)
+        return self.asm(source, address=address, symbols=symbols)
 
     # -- Architecture profiles (match nyxstone shorthand names) --------------
 
@@ -412,8 +413,24 @@ class Assembler:
         return self._local.subprocess.asm(source, self._preamble_lines)
 
     _MAX_ADDRESS = 0x10_0000  # 1 MiB — keeps .org padding reasonable
+    _SYMBOL_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_.$]*$")
 
-    def asm(self, source: str, *, address: int | None = None) -> bytes:
+    @staticmethod
+    def _symbol_directives(symbols: dict[str, int]) -> str:
+        """Build .set directives from a symbol map, validating names."""
+        lines = []
+        for name, addr in symbols.items():
+            if not Assembler._SYMBOL_RE.match(name):
+                raise ValueError(
+                    f"Invalid symbol name: {name!r}. "
+                    "Must match [A-Za-z_.][A-Za-z0-9_.$]*"
+                )
+            if not isinstance(addr, int):
+                raise TypeError(f"Symbol address must be int, got {type(addr).__name__}")
+            lines.append(f".set {name}, {addr}")
+        return "\n".join(lines)
+
+    def asm(self, source: str, *, address: int | None = None, symbols: dict[str, int] | None = None) -> bytes:
         """Assemble one or more instructions.
 
         Thread-safe.  Results are cached (LRU, up to 4096 entries) —
@@ -440,6 +457,14 @@ class Assembler:
             Base address (PC) for the assembled code.  Position-relative
             instructions (``adr``, RIP-relative, etc.) are calculated as
             if the code were placed at this address.  Max 1 MiB.
+        symbols:
+            Mapping of external symbol names to addresses.  Injected as
+            ``.set`` directives before the source.  Allows resolving
+            references like ``bl my_func`` or ``ldr r0, =hook``::
+
+                asm("bl handler", symbols={"handler": 0x8000})
+
+            Symbol names must match ``[A-Za-z_.][A-Za-z0-9_.$]*``.
 
         Returns
         -------
@@ -450,8 +475,8 @@ class Assembler:
         AsmError
             If assembly fails.
         """
-        if address is not None:
-            return self._asm_at(source, address)
+        if address is not None or symbols:
+            return self._asm_at(source, address or 0, symbols)
 
         with self._lock:
             if source in self._cache:
@@ -480,8 +505,8 @@ class Assembler:
         obj = self._run(full)
         return _extract_text(obj)
 
-    def _asm_at(self, source: str, address: int) -> bytes:
-        """Assemble with a base address using .org directive."""
+    def _asm_at(self, source: str, address: int, symbols: dict[str, int] | None = None) -> bytes:
+        """Assemble with optional base address and/or symbol injection."""
         if address < 0:
             raise ValueError("address must be non-negative")
         if address > self._MAX_ADDRESS:
@@ -494,13 +519,16 @@ class Assembler:
         parts = []
         if self.preamble:
             parts.append(self.preamble)
-        parts.append(f".org {address}")
+        if symbols:
+            parts.append(self._symbol_directives(symbols))
+        if address:
+            parts.append(f".org {address}")
         parts.append(text)
         full = "\n".join(parts) + "\n"
 
         obj = self._run(full)
         code = _extract_text(obj)
-        return code[address:]
+        return code[address:] if address else code
 
     def asm_each(self, source: str) -> list[InstructionInfo]:
         """Assemble and return per-instruction boundaries.
