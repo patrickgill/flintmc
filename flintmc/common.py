@@ -87,7 +87,7 @@ def _split_semicolons(source: str) -> str:
 def _default_preamble(triple: str) -> str:
     t = triple.lower()
     if t.startswith("thumb") or (t.startswith("armv") and "m" in t.split("-")[0]): return ".syntax unified\n.thumb"
-    if t.startswith("arm"): return ".syntax unified\n.arm"
+    if t.startswith("arm") and not t.startswith("arm64"): return ".syntax unified\n.arm"
     if "x86_64" in t or "x86-64" in t: return ".intel_syntax noprefix"
     if "i686" in t or "i386" in t: return ".intel_syntax noprefix\n.code32"
     return ""

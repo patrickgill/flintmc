@@ -22,7 +22,6 @@ ARM64 macOS, causing SIGSEGV. See research/llvm-capi-backend.py.
 import ctypes
 import ctypes.util
 import glob
-# import logging
 import os
 import shutil
 import sys
@@ -32,8 +31,6 @@ from pathlib import Path
 from typing import Any
 
 from .common import AsmError, UnsupportedArchitectureError
-
-# logger = logging.getLogger("flintmc")
 
 VP = ctypes.c_void_p
 BOOL = ctypes.c_int
@@ -277,7 +274,8 @@ def register_arch_mapping(prefix: str, llvm_name: str) -> None:
 
 def _arch_for_triple(triple: str) -> str | None:
     t = triple.lower()
-    for prefix, arch in _TRIPLE_TO_ARCH.items():
+    # Sort by prefix length descending so "arm64" matches before "arm"
+    for prefix, arch in sorted(_TRIPLE_TO_ARCH.items(), key=lambda x: len(x[0]), reverse=True):
         if t.startswith(prefix):
             return arch
     return None
@@ -321,7 +319,6 @@ class LlvmCApiBackend:
     """
 
     def __init__(self, lib: ctypes.CDLL, triple: str, cpu: str, features: str) -> None:
-        global _active_backends
         self._lib = lib
         self._triple = triple.encode()
         self._finalizer = None

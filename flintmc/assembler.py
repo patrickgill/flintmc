@@ -22,13 +22,11 @@ from .common import (
 )
 from .llvm_capi import (
     is_available,
-    set_libllvm_path,
     try_create_backend,
 )
 from .llvm_subprocess import (
     LlvmSubprocessBackend,
     find_llvm_mc,
-    set_llvm_mc_path,
 )
 
 BackendType = Literal["capi", "subprocess"]
