@@ -458,11 +458,19 @@ class Assembler:
             instructions (``adr``, RIP-relative, etc.) are calculated as
             if the code were placed at this address.  Max 1 MiB.
         symbols:
-            Mapping of external symbol names to addresses.  Injected as
-            ``.set`` directives before the source.  Allows resolving
-            references like ``bl my_func`` or ``ldr r0, =hook``::
+            Mapping of symbol names to integer values.  Injected as
+            ``.set`` directives before the source.
 
-                asm("bl handler", symbols={"handler": 0x8000})
+            For data references (``mov``, ``ldr =``, etc.) the value is
+            used as an absolute address or immediate::
+
+                asm("ldr r0, =hook", symbols={"hook": 0x2000_1000})
+
+            For branch instructions (``bl``, ``b``, ``jal``, etc.) the
+            value is treated as a **byte offset from the start of the
+            assembled block** — NOT an absolute address::
+
+                asm("bl handler", symbols={"handler": 0x80})
 
             Symbol names must match ``[A-Za-z_.][A-Za-z0-9_.$]*``.
 
