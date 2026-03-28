@@ -69,7 +69,7 @@ def _find_text(elf, e_shoff, e_shentsize, e_shnum, e_shstrndx, shdr_struct, off_
         if strtab_data[name_off : name_off + 6] == b".text\x00":
             shdr = shdr_struct.unpack_from(elf, off)
             return elf[shdr[off_idx] : shdr[off_idx] + shdr[size_idx]]
-    raise AsmError("no .text section in llvm-mc output")
+    raise AsmError("no .text section in ELF output")
 
 def _extract_text_macho64(obj: bytes) -> bytes:
     """Extract __text section from a 64-bit Mach-O object."""
