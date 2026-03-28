@@ -8,6 +8,7 @@ is available. Falls back to llvm-mc subprocess otherwise.
 """
 
 import glob
+import os
 import re
 import shutil
 import struct
@@ -18,11 +19,14 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, List, Literal, Optional
 
-from .llvm_capi import LlvmCApiBackend, try_create_backend, is_available
-
-
-class AsmError(Exception):
-    """Assembly failed."""
+from .llvm_capi import (
+    AsmError,
+    LlvmCApiBackend,
+    UnsupportedArchitectureError,
+    is_available,
+    set_libllvm_path,
+    try_create_backend,
+)
 
 BackendType = Literal["capi", "subprocess"]
 
@@ -54,8 +58,16 @@ def _extract_text_elf32(elf: bytes) -> bytes:
     e_shnum = struct.unpack_from("<H", elf, 0x30)[0]
     e_shstrndx = struct.unpack_from("<H", elf, 0x32)[0]
     shdr_struct = struct.Struct("<IIIIIIIIII")  # 10 x uint32
-    return _find_text(elf, e_shoff, e_shentsize, e_shnum, e_shstrndx, shdr_struct,
-                      off_idx=4, size_idx=5)
+    return _find_text(
+        elf,
+        e_shoff,
+        e_shentsize,
+        e_shnum,
+        e_shstrndx,
+        shdr_struct,
+        off_idx=4,
+        size_idx=5,
+    )
 
 
 def _extract_text_elf64(elf: bytes) -> bytes:
@@ -65,15 +77,30 @@ def _extract_text_elf64(elf: bytes) -> bytes:
     e_shstrndx = struct.unpack_from("<H", elf, 0x3E)[0]
     # ELF64 section header: name(4) type(4) flags(8) addr(8) offset(8) size(8) ...
     shdr_struct = struct.Struct("<IIQQQQIIQQ")
-    return _find_text(elf, e_shoff, e_shentsize, e_shnum, e_shstrndx, shdr_struct,
-                      off_idx=4, size_idx=5)
+    return _find_text(
+        elf,
+        e_shoff,
+        e_shentsize,
+        e_shnum,
+        e_shstrndx,
+        shdr_struct,
+        off_idx=4,
+        size_idx=5,
+    )
 
 
-def _find_text(elf: bytes, e_shoff: int, e_shentsize: int, e_shnum: int,
-               e_shstrndx: int, shdr_struct: struct.Struct,
-               off_idx: int, size_idx: int) -> bytes:
+def _find_text(
+    elf: bytes,
+    e_shoff: int,
+    e_shentsize: int,
+    e_shnum: int,
+    e_shstrndx: int,
+    shdr_struct: struct.Struct,
+    off_idx: int,
+    size_idx: int,
+) -> bytes:
     """Shared logic: walk section headers, find .text, return its contents.
-    
+
     Performance fix: Optimized to avoid full header list creation and use lazy unpacking.
     Directly jumps to the string table and only parses individual section headers
     until .text is found.
@@ -86,10 +113,10 @@ def _find_text(elf: bytes, e_shoff: int, e_shentsize: int, e_shnum: int,
 
     for i in range(e_shnum):
         off = e_shoff + i * e_shentsize
-        # Performance fix: sh_name is always the first 4 bytes of any Elf32/Elf64 
+        # Performance fix: sh_name is always the first 4 bytes of any Elf32/Elf64
         # section header. We only unpack this first to check for ".text".
         name_off = struct.unpack_from("<I", elf, off)[0]
-        
+
         # Performance fix: Check if this name matches ".text" (null-terminated)
         # using a direct slice comparison which is faster than index/decode.
         if strtab_data[name_off : name_off + 6] == b".text\x00":
@@ -104,6 +131,7 @@ def _find_text(elf: bytes, e_shoff: int, e_shentsize: int, e_shnum: int,
 # ---------------------------------------------------------------------------
 # Preamble detection
 # ---------------------------------------------------------------------------
+
 
 def _default_preamble(triple: str) -> str:
     """Return sensible default directives for a given LLVM triple."""
@@ -136,8 +164,8 @@ def _split_semicolons(source: str) -> str:
 
     Handles double-quoted strings (``"hello;world"``) and line comments
     starting with ``@``, ``#``, or ``//``.
-    
-    Performance fix: Optimized single-pass implementation that avoids 
+
+    Performance fix: Optimized single-pass implementation that avoids
     multiple string allocations and redundant searches.
     """
     if ";" not in source:
@@ -157,23 +185,25 @@ def _split_semicolons(source: str) -> str:
         while i < n:
             ch = line[i]
             if in_block_comment:
-                if ch == "*" and i + 1 < n and line[i+1] == "/":
+                if ch == "*" and i + 1 < n and line[i + 1] == "/":
                     in_block_comment = False
                     i += 1
             elif ch == '"':
                 in_quote = not in_quote
             elif not in_quote:
-                if ch == "/" and i + 1 < n and line[i+1] == "*":
+                if ch == "/" and i + 1 < n and line[i + 1] == "*":
                     in_block_comment = True
                     i += 1
                 elif ch == ";":
                     out.append(line[start:i])
                     start = i + 1
-                elif ch in ("@", "#") or (ch == "/" and i + 1 < n and line[i+1] == "/"):
+                elif ch in ("@", "#") or (
+                    ch == "/" and i + 1 < n and line[i + 1] == "/"
+                ):
                     # Stop at line comment start
                     break
             i += 1
-        
+
         # Append the rest of the line (including comment if we broke out)
         out.append(line[start:])
 
@@ -188,7 +218,7 @@ def _fix_error(stderr: str, preamble_lines: int) -> str:
         if m:
             orig = int(m.group(1))
             adjusted = max(1, orig - preamble_lines)
-            line = f"line {adjusted}:" + line[m.end():]
+            line = f"line {adjusted}:" + line[m.end() :]
         lines.append(line)
     return "\n".join(lines)
 
@@ -197,21 +227,31 @@ def _fix_error(stderr: str, preamble_lines: int) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def find_llvm_mc() -> str | None:
     """Try to locate llvm-mc on the system.
 
-    Checks platform-specific install paths, then falls back to PATH.
-    Returns the path string, or None if not found.
-
-    Currently tested on macOS and Linux.  Windows support is planned
-    but not yet validated — ``shutil.which`` should find llvm-mc if
-    LLVM's bin directory is on PATH.
+    Order of preference:
+    1. LLVM_PATH environment variable (root of an LLVM installation)
+    2. Platform-specific installation paths
+    3. PATH via shutil.which
     """
+    # 1. Check standard LLVM_PATH environment variable
+    env_path = os.environ.get("LLVM_PATH")
+    if env_path:
+        mc_path = (
+            Path(env_path)
+            / "bin"
+            / ("llvm-mc.exe" if sys.platform == "win32" else "llvm-mc")
+        )
+        if mc_path.is_file():
+            return str(mc_path)
+
     candidates: list[str] = []
     if sys.platform == "darwin":
         candidates = [
-            "/opt/homebrew/opt/llvm/bin/llvm-mc",   # Apple Silicon Homebrew
-            "/usr/local/opt/llvm/bin/llvm-mc",       # Intel Homebrew
+            "/opt/homebrew/opt/llvm/bin/llvm-mc",  # Apple Silicon Homebrew
+            "/usr/local/opt/llvm/bin/llvm-mc",  # Intel Homebrew
         ]
     elif sys.platform.startswith("linux"):
         candidates = [
@@ -221,7 +261,11 @@ def find_llvm_mc() -> str | None:
         # Versioned LLVM installs: /usr/bin/llvm-mc-18, etc.
         versioned = sorted(glob.glob("/usr/bin/llvm-mc-[0-9]*"), reverse=True)
         candidates.extend(versioned)
-    # win32: no well-known paths, rely on PATH below
+    elif sys.platform == "win32":
+        candidates = [
+            "C:\\Program Files\\LLVM\\bin\\llvm-mc.exe",
+            "C:\\Program Files (x86)\\LLVM\\bin\\llvm-mc.exe",
+        ]
 
     for c in candidates:
         if Path(c).is_file():
@@ -294,7 +338,7 @@ class Assembler:
             if cls.default_backend == "subprocess" and not cls.subprocess_available():
                 raise RuntimeError("subprocess backend requested but llvm-mc not found")
             return cls.default_backend
-        
+
         if cls._resolved_default is None:
             if cls.capi_available():
                 cls._resolved_default = "capi"
@@ -306,7 +350,7 @@ class Assembler:
                     "  macOS: brew install llvm\n"
                     "  Linux: apt install llvm"
                 )
-                
+
         return cls._resolved_default
 
     triple: str
@@ -349,7 +393,7 @@ class Assembler:
         # 2. Use global default (e.g. from pytest --backend)
         # 3. Auto-detect (C API preferred)
         requested = backend or Assembler.default_backend
-        
+
         if requested == "capi":
             if not self.capi_available():
                 raise RuntimeError(f"C API backend requested but libLLVM not found")
@@ -368,9 +412,13 @@ class Assembler:
         # Set the llvm-mc path (used for execution or diagnostics)
         self.llvm_mc = llvm_mc or find_llvm_mc() or ""
         if self.backend == "subprocess" and not self.llvm_mc:
-             raise FileNotFoundError("llvm-mc not found for subprocess backend")
-        
-        if self.llvm_mc and not Path(self.llvm_mc).is_file() and not shutil.which(self.llvm_mc):
+            raise FileNotFoundError("llvm-mc not found for subprocess backend")
+
+        if (
+            self.llvm_mc
+            and not Path(self.llvm_mc).is_file()
+            and not shutil.which(self.llvm_mc)
+        ):
             raise FileNotFoundError(f"llvm-mc not found at: {self.llvm_mc}")
 
         # Pre-build the subprocess command
@@ -380,13 +428,25 @@ class Assembler:
                 self.llvm_mc,
                 f"-triple={self.triple}",
                 "-filetype=obj",
-                "-o", "-",
+                "-o",
+                "-",
             ]
             if self.cpu:
                 cmd.append(f"-mcpu={self.cpu}")
             if self.features:
                 cmd.append(f"-mattr={self.features}")
         self._cmd = cmd
+
+        # Eagerly validate configuration and backend availability
+        try:
+            self.asm("")
+        except AsmError as e:
+            msg = str(e)
+            if "unable to get target" in msg or "unknown target" in msg:
+                raise UnsupportedArchitectureError(
+                    f"Unsupported or unknown architecture for triple: {self.triple}"
+                ) from None
+            raise
 
     def _get_capi_backend(self) -> Any:
         """Get or create the thread-local C API backend instance."""
@@ -526,7 +586,7 @@ class Assembler:
         raise AsmError(f"Unknown backend: {self.backend}")
 
     def _run_capi(self, source: str) -> bytes:
-        """Assemble via in-process LLVM C API (~0.15ms/call).
+        """Assemble via in-process LLVM C API
 
         Uses a private thread-local LLVMContext with a diagnostic handler to
         intercept errors safely — no exit(), proper AsmError on bad input.
@@ -542,7 +602,7 @@ class Assembler:
             raise AsmError(_fix_error(str(exc), self._preamble_lines))
 
     def _run_subprocess(self, source: str) -> bytes:
-        """Assemble via llvm-mc subprocess (~10ms/call)."""
+        """Assemble via llvm-mc subprocess."""
         try:
             result = subprocess.run(
                 self._cmd,

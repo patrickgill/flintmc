@@ -20,6 +20,10 @@ ARM64 macOS, causing SIGSEGV. See research/llvm-capi-backend.py.
 """
 
 import ctypes
+import ctypes.util
+import glob
+import os
+import shutil
 import sys
 import threading
 import weakref
@@ -32,6 +36,13 @@ CSTR = ctypes.c_char_p
 SZ = ctypes.c_size_t
 
 LLVMObjectFile = 1
+
+class AsmError(Exception):
+    """Assembly failed."""
+
+class UnsupportedArchitectureError(AsmError):
+    """Raised when the requested architecture is not supported by flintmc or the underlying LLVM build."""
+    pass
 
 # Diagnostic handler callback type: void(LLVMDiagnosticInfoRef, void*)
 DIAG_HANDLER = ctypes.CFUNCTYPE(None, VP, ctypes.c_void_p)
@@ -50,10 +61,11 @@ _LLVM_PATHS = {
     ],
     "linux": [
         "/usr/lib/libLLVM.so",
-        "/usr/lib/llvm-18/lib/libLLVM.so",
-        "/usr/lib/llvm-17/lib/libLLVM.so",
-        "/usr/lib/llvm-16/lib/libLLVM.so",
-        "/usr/lib/llvm-15/lib/libLLVM.so",
+        "/usr/lib64/libLLVM.so",
+    ],
+    "win32": [
+        "C:\\Program Files\\LLVM\\bin\\LLVM-C.dll",
+        "C:\\Program Files (x86)\\LLVM\\bin\\LLVM-C.dll",
     ],
 }
 
@@ -62,26 +74,90 @@ _initialized_arches: set[str] = set()
 _init_lock = threading.Lock()
 _active_backends = 0
 
+_getattr = getattr
+
 
 def _load_llvm() -> ctypes.CDLL | None:
-    """Try to load libLLVM. Returns None if not found."""
+    """Try to load libLLVM. Returns None if not found.
+    
+    Order of preference:
+    1. LLVM_PATH environment variable (root of an LLVM installation)
+    2. Windows-specific PATH discovery
+    3. Platform-standard installation paths (Homebrew, apt, etc.)
+    """
     global _lib
     with _init_lock:
         if _lib is not None:
             return _lib
 
-        platform = "darwin" if sys.platform == "darwin" else "linux"
-        candidates = _LLVM_PATHS.get(platform, [])
+        platform = sys.platform
+        candidates = []
+
+        # 1. Check standard LLVM_PATH environment variable
+        env_path = os.environ.get("LLVM_PATH")
+        if env_path:
+            p = Path(env_path)
+            if platform == "win32":
+                candidates.append(str(p / "bin" / "LLVM-C.dll"))
+                candidates.append(str(p / "bin" / "libLLVM.dll"))
+            else:
+                ext = "dylib" if platform == "darwin" else "so"
+                # Check both lib and lib64
+                candidates.append(str(p / "lib" / f"libLLVM.{ext}"))
+                candidates.append(str(p / "lib64" / f"libLLVM.{ext}"))
+
+        if platform == "win32":
+            candidates.extend(_LLVM_PATHS["win32"])
+            
+            # 2. Check PATH via shutil.which
+            mc_path = shutil.which("llvm-mc")
+            if mc_path:
+                bin_dir = Path(mc_path).parent
+                candidates.append(str(bin_dir / "LLVM-C.dll"))
+                candidates.append(str(bin_dir / "libLLVM.dll"))
+                
+            # 3. Last resort: ctypes find_library
+            found = ctypes.util.find_library("LLVM-C")
+            if found:
+                candidates.append(found)
+        else:
+            plat_key = "darwin" if platform == "darwin" else "linux"
+            candidates.extend(_LLVM_PATHS.get(plat_key, []))
+
+            if platform == "linux":
+                # Versioned and multiarch paths for Linux
+                for base in ["/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu"]:
+                    # glob for libLLVM.so.N, libLLVM-N.so, etc.
+                    candidates.extend(glob.glob(f"{base}/libLLVM*.so*"))
 
         for path in candidates:
-            if Path(path).exists():
+            p = Path(path)
+            if p.exists() or (platform == "win32" and not p.is_absolute()):
                 try:
                     _lib = ctypes.CDLL(path)
-                    _declare_argtypes(_lib)
-                    return _lib
                 except OSError:
                     continue
+                
+                # Any error inside _declare_argtypes (like missing functions)
+                # should bubble up as it indicates a broken/incompatible install.
+                _declare_argtypes(_lib)
+                return _lib
     return None
+
+
+def set_libllvm_path(path: str) -> None:
+    """Explicitly set the path to libLLVM and (re)load it.
+    
+    Warning: This clears the internal library cache. Existing backend
+    instances will continue to use the library they were created with,
+    but new instances will use the new path.
+    """
+    global _lib, _initialized_arches
+    with _init_lock:
+        _lib = ctypes.CDLL(path)
+        _declare_argtypes(_lib)
+        # Arches must be re-initialized for the new library
+        _initialized_arches.clear()
 
 
 def is_available() -> bool:
@@ -97,7 +173,7 @@ def _declare_argtypes(lib: ctypes.CDLL) -> None:
     """
 
     def _get(name: str) -> Any:
-        fn = getattr(lib, name, None)
+        fn = _getattr(lib, name, None)
         if fn is None:
             raise RuntimeError(f"Required LLVM function '{name}' not found in library")
         return fn
@@ -173,10 +249,29 @@ _TRIPLE_TO_ARCH = {
     "i686": "X86",
     "i386": "X86",
     "aarch64": "AArch64",
+    "arm64": "AArch64",
     "riscv32": "RISCV",
     "riscv64": "RISCV",
+    "wasm32": "WebAssembly",
+    "wasm64": "WebAssembly",
+    "ppc64": "PowerPC",
+    "ppc64le": "PowerPC",
+    "powerpc": "PowerPC",
+    "sparc": "Sparc",
+    "s390x": "SystemZ",
     "mips": "Mips",
+    "loongarch64": "LoongArch",
 }
+
+
+def register_arch_mapping(prefix: str, llvm_name: str) -> None:
+    """Register a new triple-prefix to LLVM architecture name mapping.
+    
+    Example:
+        register_arch_mapping("mycpu", "MyArch")
+        # Allows triples starting with 'mycpu' to resolve LLVMInitializeMyArch*
+    """
+    _TRIPLE_TO_ARCH[prefix.lower()] = llvm_name
 
 
 def _arch_for_triple(triple: str) -> str | None:
@@ -194,9 +289,9 @@ def _init_target(lib: ctypes.CDLL, arch: str) -> None:
 
         for suffix in ["TargetInfo", "AsmParser", "AsmPrinter", "Target", "TargetMC"]:
             name = f"LLVMInitialize{arch}{suffix}"
-            fn = getattr(lib, name, None)
+            fn = _getattr(lib, name, None)
             if fn is None:
-                raise RuntimeError(
+                raise UnsupportedArchitectureError(
                     f"LLVM symbol '{name}' not found. "
                     f"Is {arch} support enabled in your LLVM build?"
                 )
@@ -228,6 +323,7 @@ class LlvmCApiBackend:
         global _active_backends
         self._lib = lib
         self._triple = triple.encode()
+        self._finalizer = None
 
         # Per-backend error accumulator.
         self._errors: list[str] = []
@@ -247,14 +343,14 @@ class LlvmCApiBackend:
             msg = err.value.decode() if err.value else "unknown target"
             lib.LLVMDisposeMessage(err)
             lib.LLVMContextDispose(self._ctx)
-            raise RuntimeError(f"LLVM target lookup failed for '{triple}': {msg}")
+            raise UnsupportedArchitectureError(f"LLVM target lookup failed for '{triple}': {msg}")
 
         self._tm = lib.LLVMCreateTargetMachine(
             target, self._triple, cpu.encode(), features.encode(), 0, 0, 0
         )
         if not self._tm:
             lib.LLVMContextDispose(self._ctx)
-            raise RuntimeError(f"LLVMCreateTargetMachine() failed for triple '{triple}'")
+            raise UnsupportedArchitectureError(f"Failed to create TargetMachine for '{triple}'")
 
         # Performance fix: Reuse a single module for all calls. LLVMSetModuleInlineAsm2
         # overwrites existing assembly, avoiding the cost of per-call module creation.
@@ -343,7 +439,8 @@ class LlvmCApiBackend:
 
     def close(self) -> None:
         """Release the TargetMachine and context."""
-        self._finalizer()
+        if self._finalizer:
+            self._finalizer()
 
 
 def _dispose_resources(lib: Any, ctx: int, tm: int, mod: int, dl: int) -> None:
@@ -370,9 +467,9 @@ def try_create_backend(triple: str, cpu: str, features: str) -> LlvmCApiBackend 
 
     arch = _arch_for_triple(triple)
     if arch is None:
-        raise RuntimeError(f"Unsupported or unknown architecture for triple: {triple}")
+        raise UnsupportedArchitectureError(f"Unsupported or unknown architecture for triple: {triple}")
 
     _init_target(lib, arch)
 
-    # Propagate RuntimeError if target lookup/machine creation fails
+    # Propagate UnsupportedArchitectureError if target lookup/machine creation fails
     return LlvmCApiBackend(lib, triple, cpu, features)
