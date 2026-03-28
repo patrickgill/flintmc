@@ -1,0 +1,455 @@
+"""Tests for features added during the code audit.
+
+Covers: Mach-O extraction, COFF extraction, big-endian ELF, _split_semicolons
+edge cases, _default_preamble, _fix_error, _extract_text dispatch,
+register_default_preamble, register_arch_mapping, close()/context manager,
+__repr__, asm_each(), address parameter, InstructionInfo.
+"""
+
+import struct
+import pytest
+import flintmc
+from flintmc import Assembler, AsmError, InstructionInfo
+from flintmc.common import (
+    _split_semicolons,
+    _default_preamble,
+    _fix_error,
+    _extract_text,
+    _elf_endian,
+    register_default_preamble,
+    _PREAMBLE_OVERRIDES,
+)
+import flintmc.llvm_capi
+from flintmc.llvm_capi import register_arch_mapping
+
+
+# ---------------------------------------------------------------------------
+# _split_semicolons
+# ---------------------------------------------------------------------------
+
+class TestSplitSemicolons:
+    def test_no_semicolons(self):
+        assert _split_semicolons("nop") == "nop"
+
+    def test_basic_split(self):
+        assert _split_semicolons("nop; ret") == "nop\n ret"
+
+    def test_double_quotes(self):
+        assert _split_semicolons('mov al, ";"') == 'mov al, ";"'
+
+    def test_single_quotes(self):
+        assert _split_semicolons("mov al, ';'") == "mov al, ';'"
+
+    def test_hash_immediate_digit(self):
+        result = _split_semicolons("mov x0, #42; ret")
+        assert "ret" in result
+        assert "\n" in result
+
+    def test_hash_immediate_negative(self):
+        result = _split_semicolons("mov x0, #-1; ret")
+        assert "\n" in result
+
+    def test_hash_immediate_paren(self):
+        result = _split_semicolons("mov x0, #(1 << 5); ret")
+        assert "\n" in result
+
+    def test_hash_comment(self):
+        result = _split_semicolons("nop # comment; not split")
+        assert "\n" not in result
+
+    def test_hash_end_of_line(self):
+        result = _split_semicolons("nop #")
+        assert result == "nop #"
+
+    def test_at_comment(self):
+        result = _split_semicolons("add r0, r1 @ comment; not split")
+        assert "\n" not in result
+
+    def test_c_style_comment(self):
+        result = _split_semicolons("nop // comment; not split")
+        assert "\n" not in result
+
+    def test_block_comment(self):
+        result = _split_semicolons("nop /* ; */ ret")
+        assert ";" not in result or result.count("\n") == 0
+        # The semicolon is inside a block comment, so no split
+
+    def test_multiline_preserves_newlines(self):
+        result = _split_semicolons("nop\nret")
+        assert result == "nop\nret"
+
+    def test_multiple_semicolons(self):
+        result = _split_semicolons("a; b; c")
+        parts = result.split("\n")
+        assert len(parts) == 3
+
+
+# ---------------------------------------------------------------------------
+# _default_preamble
+# ---------------------------------------------------------------------------
+
+class TestDefaultPreamble:
+    def test_thumb(self):
+        assert _default_preamble("thumbv7em-none-eabi") == ".syntax unified\n.thumb"
+
+    def test_armv7m(self):
+        assert _default_preamble("armv7m-none-eabi") == ".syntax unified\n.thumb"
+
+    def test_armv8m_main(self):
+        assert _default_preamble("armv8m.main-none-eabi") == ".syntax unified\n.thumb"
+
+    def test_armv7a_gets_arm_not_thumb(self):
+        assert _default_preamble("armv7a-none-eabi") == ".syntax unified\n.arm"
+
+    def test_armv8a_gets_arm_not_thumb(self):
+        assert _default_preamble("armv8a-none-eabi") == ".syntax unified\n.arm"
+
+    def test_arm_generic(self):
+        assert _default_preamble("arm-none-eabi") == ".syntax unified\n.arm"
+
+    def test_arm64_no_preamble(self):
+        assert _default_preamble("arm64-apple-macos") == ""
+
+    def test_aarch64_no_preamble(self):
+        assert _default_preamble("aarch64") == ""
+
+    def test_x86_64(self):
+        assert _default_preamble("x86_64") == ".intel_syntax noprefix"
+
+    def test_x86_dash_64(self):
+        assert _default_preamble("x86-64") == ".intel_syntax noprefix"
+
+    def test_i686(self):
+        p = _default_preamble("i686")
+        assert ".intel_syntax noprefix" in p
+        assert ".code32" in p
+
+    def test_riscv_no_preamble(self):
+        assert _default_preamble("riscv64") == ""
+
+    def test_unknown_no_preamble(self):
+        assert _default_preamble("unknown-triple") == ""
+
+
+# ---------------------------------------------------------------------------
+# register_default_preamble
+# ---------------------------------------------------------------------------
+
+class TestRegisterDefaultPreamble:
+    def setup_method(self):
+        self._orig = dict(_PREAMBLE_OVERRIDES)
+
+    def teardown_method(self):
+        _PREAMBLE_OVERRIDES.clear()
+        _PREAMBLE_OVERRIDES.update(self._orig)
+
+    def test_basic(self):
+        register_default_preamble("mycpu", ".option foo")
+        assert _default_preamble("mycpu-none-elf") == ".option foo"
+
+    def test_override_builtin(self):
+        register_default_preamble("x86_64", ".att_syntax")
+        assert _default_preamble("x86_64") == ".att_syntax"
+
+    def test_longest_prefix_wins(self):
+        register_default_preamble("myc", "short")
+        register_default_preamble("mycpu", "long")
+        assert _default_preamble("mycpu-none") == "long"
+
+
+# ---------------------------------------------------------------------------
+# register_arch_mapping
+# ---------------------------------------------------------------------------
+
+class TestRegisterArchMapping:
+    def setup_method(self):
+        self._added: list[str] = []
+
+    def teardown_method(self):
+        mapping = flintmc.llvm_capi._TRIPLE_TO_ARCH
+        for key in self._added:
+            mapping.pop(key, None)
+
+    def test_basic(self):
+        register_arch_mapping("fakearch", "FakeArch")
+        self._added.append("fakearch")
+        assert flintmc.llvm_capi._TRIPLE_TO_ARCH["fakearch"] == "FakeArch"
+
+    def test_case_insensitive(self):
+        register_arch_mapping("FooBar", "Foo")
+        self._added.append("foobar")
+        assert "foobar" in flintmc.llvm_capi._TRIPLE_TO_ARCH
+
+
+# ---------------------------------------------------------------------------
+# _fix_error
+# ---------------------------------------------------------------------------
+
+class TestFixError:
+    def test_stdin_line_adjustment(self):
+        err = "<stdin>:5: error: bad instruction"
+        result = _fix_error(err, preamble_lines=2)
+        assert "line 3:" in result
+
+    def test_inline_asm_line_adjustment(self):
+        err = "<inline asm>:3: error: bad"
+        result = _fix_error(err, preamble_lines=1)
+        assert "line 2:" in result
+
+    def test_no_match_passthrough(self):
+        err = "some other error"
+        assert _fix_error(err, preamble_lines=2) == err
+
+    def test_min_line_1(self):
+        err = "<stdin>:1: error: bad"
+        result = _fix_error(err, preamble_lines=5)
+        assert "line 1:" in result
+
+    def test_multiline(self):
+        err = "<stdin>:3: first\n<stdin>:4: second"
+        result = _fix_error(err, preamble_lines=1)
+        assert "line 2:" in result
+        assert "line 3:" in result
+
+
+# ---------------------------------------------------------------------------
+# _extract_text dispatch and error paths
+# ---------------------------------------------------------------------------
+
+class TestExtractText:
+    def test_too_short(self):
+        with pytest.raises(AsmError, match="valid object output"):
+            _extract_text(b"\x00")
+
+    def test_bad_magic(self):
+        with pytest.raises(AsmError, match="valid ELF, Mach-O, or COFF"):
+            _extract_text(b"\x00" * 20)
+
+    def test_truncated_elf(self):
+        with pytest.raises(AsmError, match="truncated"):
+            _extract_text(b"\x7fELF\x01")
+
+    def test_bad_elf_class(self):
+        with pytest.raises(AsmError, match="unsupported ELF class"):
+            _extract_text(b"\x7fELF\x03\x01")
+
+    def test_bad_elf_endian(self):
+        with pytest.raises(AsmError, match="unsupported ELF endianness"):
+            _elf_endian(b"\x7fELF\x01\x03")
+
+
+# ---------------------------------------------------------------------------
+# Mach-O extraction (requires C API on macOS)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
+class TestMachO:
+    def test_arm64_apple_triple(self):
+        asm = Assembler(triple="arm64-apple-macos")
+        code = asm("ret")
+        assert len(code) == 4
+        assert code == b"\xc0\x03\x5f\xd6"
+
+    def test_arm64_apple_multi_instruction(self):
+        asm = Assembler(triple="arm64-apple-macos")
+        code = asm("mov x0, #42\nret")
+        assert len(code) == 8
+
+    def test_arm64_apple_empty(self):
+        asm = Assembler(triple="arm64-apple-macos")
+        assert asm("") == b""
+
+
+# ---------------------------------------------------------------------------
+# COFF extraction (requires C API)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
+class TestCOFF:
+    def test_windows_triple(self):
+        asm = Assembler(triple="x86_64-pc-windows-msvc")
+        code = asm("nop; ret")
+        assert code == b"\x90\xc3"
+
+    def test_windows_empty(self):
+        asm = Assembler(triple="x86_64-pc-windows-msvc")
+        assert asm("") == b""
+
+
+# ---------------------------------------------------------------------------
+# close() and context manager
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
+class TestCloseAndContextManager:
+    def test_close_and_reuse(self):
+        asm = Assembler.x86_64()
+        code1 = asm("nop")
+        asm.close()
+        code2 = asm("nop")
+        assert code1 == code2
+
+    def test_double_close(self):
+        asm = Assembler.x86_64()
+        asm("nop")
+        asm.close()
+        asm.close()  # should not raise
+
+    def test_context_manager(self):
+        with Assembler.x86_64() as asm:
+            code = asm("nop; ret")
+        assert code == b"\x90\xc3"
+
+    def test_cache_cleared_on_close(self):
+        asm = Assembler.x86_64()
+        asm("nop")
+        assert asm.cache_size > 0
+        asm.close()
+        assert asm.cache_size == 0
+
+
+# ---------------------------------------------------------------------------
+# __repr__
+# ---------------------------------------------------------------------------
+
+class TestRepr:
+    def test_basic(self):
+        asm = Assembler.x86_64()
+        r = repr(asm)
+        assert "x86_64" in r
+        assert "backend=" in r
+
+    def test_with_cpu(self):
+        asm = Assembler.cortex_m7_dp()
+        r = repr(asm)
+        assert "cortex-m7" in r
+
+
+# ---------------------------------------------------------------------------
+# asm_each()
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
+class TestAsmEach:
+    def test_basic(self):
+        asm = Assembler.x86_64()
+        results = asm.asm_each("mov eax, 1; nop; ret")
+        assert len(results) == 3
+        assert results[0].source == "mov eax, 1"
+        assert results[0].offset == 0
+        assert results[0].size == 5
+        assert results[1].source == "nop"
+        assert results[1].offset == 5
+        assert results[1].size == 1
+        assert results[2].source == "ret"
+        assert results[2].offset == 6
+        assert results[2].size == 1
+
+    def test_with_labels(self):
+        asm = Assembler.aarch64()
+        results = asm.asm_each("loop:\n  mov x0, #42\n  b loop")
+        assert len(results) == 2
+        assert results[0].source == "mov x0, #42"
+        assert results[1].source == "b loop"
+
+    def test_concatenated_bytes_match_asm(self):
+        asm = Assembler.x86_64()
+        source = "push rbp; mov rbp, rsp; pop rbp; ret"
+        each = asm.asm_each(source)
+        full = asm(source)
+        concat = b"".join(info.code for info in each)
+        assert concat == full
+
+    def test_empty(self):
+        asm = Assembler.x86_64()
+        assert asm.asm_each("") == []
+
+    def test_instruction_info_frozen(self):
+        asm = Assembler.x86_64()
+        results = asm.asm_each("nop")
+        with pytest.raises(AttributeError):
+            results[0].offset = 99
+
+
+# ---------------------------------------------------------------------------
+# address parameter
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
+class TestAddress:
+    def test_basic(self):
+        asm = Assembler.aarch64()
+        # adr x0, . is PC-relative to self — same regardless of address
+        code0 = asm("adr x0, .", address=0)
+        code100 = asm("adr x0, .", address=0x100)
+        assert code0 == code100
+
+    def test_address_zero_same_as_default(self):
+        asm = Assembler.x86_64()
+        default = asm("nop; ret")
+        at_zero = asm("nop; ret", address=0)
+        assert default == at_zero
+
+    def test_negative_address_raises(self):
+        asm = Assembler.x86_64()
+        with pytest.raises(ValueError, match="non-negative"):
+            asm("nop", address=-1)
+
+    def test_too_large_address_raises(self):
+        asm = Assembler.x86_64()
+        with pytest.raises(ValueError, match="exceeds maximum"):
+            asm("nop", address=0x20_0000)
+
+    def test_via_call(self):
+        asm = Assembler.x86_64()
+        code = asm("nop", address=0x100)
+        assert code == b"\x90"
+
+    def test_not_cached(self):
+        """address= calls bypass cache so different addresses don't collide."""
+        asm = Assembler.x86_64()
+        asm("nop", address=0x100)
+        # Cache should not have grown (address calls bypass cache)
+        prev = asm.cache_size
+        asm("nop", address=0x200)
+        assert asm.cache_size == prev
+
+
+# ---------------------------------------------------------------------------
+# arm64 prefix resolution
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
+class TestArm64Prefix:
+    def test_arm64_triple(self):
+        asm = Assembler(triple="arm64")
+        code = asm("ret")
+        assert len(code) == 4
+
+    def test_arm64_matches_aarch64(self):
+        asm1 = Assembler(triple="arm64")
+        asm2 = Assembler.aarch64()
+        assert asm1("ret") == asm2("ret")
+
+
+# ---------------------------------------------------------------------------
+# Module-level convenience
+# ---------------------------------------------------------------------------
+
+class TestModuleLevel:
+    def test_no_default_raises(self):
+        saved = flintmc.default
+        try:
+            flintmc.default = None
+            with pytest.raises(RuntimeError, match="No default"):
+                flintmc.asm("nop")
+        finally:
+            flintmc.default = saved
+
+    def test_with_default(self):
+        saved = flintmc.default
+        try:
+            flintmc.default = Assembler.x86_64()
+            assert flintmc.asm("nop") == b"\x90"
+        finally:
+            flintmc.default = saved
