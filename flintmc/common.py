@@ -1,8 +1,5 @@
-import glob
-import os
 import re
 import struct
-from typing import Optional
 
 class AsmError(Exception):
     """Assembly failed."""

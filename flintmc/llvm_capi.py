@@ -379,7 +379,7 @@ class LlvmCApiBackend:
             self, _dispose_resources, lib, self._ctx, self._tm, self._mod, self._dl
         )
 
-    def _on_diagnostic(self, info: int, _ctx: int) -> None:
+    def _on_diagnostic(self, info: Any, _ctx: Any) -> None:
         """LLVM diagnostic callback. Captures error messages.
 
         Called by LLVM from within emit.

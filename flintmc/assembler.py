@@ -157,7 +157,7 @@ class Assembler:
 
         if requested == "capi":
             if not self.capi_available():
-                raise RuntimeError(f"C API backend requested but libLLVM not found")
+                raise RuntimeError("C API backend requested but libLLVM not found")
             self.backend = "capi"
         elif requested == "subprocess":
             self.backend = "subprocess"
@@ -318,6 +318,40 @@ class Assembler:
     def aarch64(cls, **kw: Any) -> "Assembler":
         """AArch64 (ARMv8-A 64-bit)."""
         return cls("aarch64", cpu="", features="", **kw)
+
+    @classmethod
+    def loongarch64(cls, **kw: Any) -> "Assembler":
+        """LoongArch 64-bit."""
+        return cls("loongarch64", **kw)
+
+    # -- RISC-V profiles ---------------------------------------------------
+
+    @classmethod
+    def riscv64(cls, **kw: Any) -> "Assembler":
+        """RISC-V 64-bit with common extensions (mafd)."""
+        return cls("riscv64", cpu="generic-rv64", features="+m,+a,+f,+d", **kw)
+
+    @classmethod
+    def riscv32(cls, **kw: Any) -> "Assembler":
+        """RISC-V 32-bit with common extensions (maf)."""
+        return cls("riscv32", cpu="generic-rv32", features="+m,+a,+f", **kw)
+
+    # -- Other popular architectures ---------------------------------------
+
+    @classmethod
+    def avr(cls, **kw: Any) -> "Assembler":
+        """Atmel AVR (8-bit microcontroller)."""
+        return cls("avr", cpu="avr5", **kw)
+
+    @classmethod
+    def bpf(cls, **kw: Any) -> "Assembler":
+        """BPF (Berkeley Packet Filter) / eBPF."""
+        return cls("bpf", **kw)
+
+    @classmethod
+    def msp430(cls, **kw: Any) -> "Assembler":
+        """TI MSP430 (ultra-low-power 16-bit MCU)."""
+        return cls("msp430", **kw)
 
     # -- Core assembly -----------------------------------------------------
 
