@@ -17,6 +17,7 @@ from .common import (
     AsmError,
     UnsupportedArchitectureError,
     find_llvm_mc,
+    set_llvm_mc_path,
     _extract_text,
     _fix_error,
     _split_semicolons,
