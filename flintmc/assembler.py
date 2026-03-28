@@ -233,9 +233,9 @@ class Assembler:
             parts.append(self.cpu)
         return f"Assembler({', '.join(parts)}, backend={self.backend})"
 
-    def __call__(self, source: str) -> bytes:
+    def __call__(self, source: str, *, address: int | None = None) -> bytes:
         """Shorthand for ``asm(source)``."""
-        return self.asm(source)
+        return self.asm(source, address=address)
 
     # -- Architecture profiles (match nyxstone shorthand names) --------------
 
@@ -411,7 +411,9 @@ class Assembler:
             )
         return self._local.subprocess.asm(source, self._preamble_lines)
 
-    def asm(self, source: str) -> bytes:
+    _MAX_ADDRESS = 0x10_0000  # 1 MiB — keeps .org padding reasonable
+
+    def asm(self, source: str, *, address: int | None = None) -> bytes:
         """Assemble one or more instructions.
 
         Thread-safe.  Results are cached (LRU, up to 4096 entries) —
@@ -434,6 +436,10 @@ class Assembler:
 
             Labels, literal pools, and all standard assembler directives
             are passed straight through to LLVM's MC layer.
+        address:
+            Base address (PC) for the assembled code.  Position-relative
+            instructions (``adr``, RIP-relative, etc.) are calculated as
+            if the code were placed at this address.  Max 1 MiB.
 
         Returns
         -------
@@ -444,12 +450,25 @@ class Assembler:
         AsmError
             If assembly fails.
         """
+        if address is not None:
+            return self._asm_at(source, address)
+
         with self._lock:
             if source in self._cache:
                 self._cache.move_to_end(source)
                 return self._cache[source]
 
-        # Normalize bare semicolons -> newlines (preserve quoted/commented)
+        code = self._assemble(source)
+
+        with self._lock:
+            self._cache[source] = code
+            if len(self._cache) > self._cache_maxsize:
+                self._cache.popitem(last=False)
+
+        return code
+
+    def _assemble(self, source: str) -> bytes:
+        """Assemble source text without caching or address offset."""
         text = _split_semicolons(source)
 
         parts = []
@@ -458,15 +477,30 @@ class Assembler:
         parts.append(text)
         full = "\n".join(parts) + "\n"
 
-        elf = self._run(full)
-        code = _extract_text(elf)
+        obj = self._run(full)
+        return _extract_text(obj)
 
-        with self._lock:
-            self._cache[source] = code
-            if len(self._cache) > self._cache_maxsize:
-                self._cache.popitem(last=False)
+    def _asm_at(self, source: str, address: int) -> bytes:
+        """Assemble with a base address using .org directive."""
+        if address < 0:
+            raise ValueError("address must be non-negative")
+        if address > self._MAX_ADDRESS:
+            raise ValueError(
+                f"address 0x{address:x} exceeds maximum 0x{self._MAX_ADDRESS:x}. "
+                "Use .org directly for larger addresses."
+            )
 
-        return code
+        text = _split_semicolons(source)
+        parts = []
+        if self.preamble:
+            parts.append(self.preamble)
+        parts.append(f".org {address}")
+        parts.append(text)
+        full = "\n".join(parts) + "\n"
+
+        obj = self._run(full)
+        code = _extract_text(obj)
+        return code[address:]
 
     def asm_each(self, source: str) -> list[InstructionInfo]:
         """Assemble and return per-instruction boundaries.
