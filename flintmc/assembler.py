@@ -200,6 +200,23 @@ class Assembler:
                 raise RuntimeError(f"Failed to create C API backend for {self.triple}")
         return self._local.capi
 
+    def close(self) -> None:
+        """Release backend resources for the calling thread.
+
+        Safe to call multiple times.  After ``close()``, the assembler
+        can still be used — a fresh backend is created on the next call.
+        """
+        if hasattr(self._local, "capi") and self._local.capi:
+            self._local.capi.close()
+            del self._local.capi
+        self.cache_clear()
+
+    def __enter__(self) -> "Assembler":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
     def __repr__(self) -> str:
         parts = [self.triple]
         if self.cpu:
