@@ -14,11 +14,10 @@ from flintmc.common import (
     _split_semicolons,
     _default_preamble,
     _fix_error,
-    _extract_text,
-    _elf_endian,
     register_default_preamble,
     _PREAMBLE_OVERRIDES,
 )
+from flintmc.objfile import extract_text as _extract_text, _elf_endian
 import flintmc.llvm_capi
 from flintmc.llvm_capi import register_arch_mapping
 

@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .common import AsmError, _fix_error
+from .errors import AsmError
+from .common import _fix_error
 
 _global_llvm_mc_path: Optional[str] = None
 

@@ -10,7 +10,7 @@ import dataclasses
 import threading
 from typing import Any
 
-from .common import AsmError, UnsupportedArchitectureError
+from .errors import AsmError, UnsupportedArchitectureError
 from .llvm_capi import (
     _load_llvm,
     _init_target,

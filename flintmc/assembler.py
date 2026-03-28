@@ -14,14 +14,9 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from .common import (
-    AsmError,
-    UnsupportedArchitectureError,
-    _extract_text,
-    _fix_error,
-    _split_semicolons,
-    _default_preamble,
-)
+from .errors import AsmError, UnsupportedArchitectureError
+from .objfile import extract_text as _extract_text
+from .common import _fix_error, _split_semicolons, _default_preamble
 from .llvm_capi import (
     is_available,
     try_create_backend,

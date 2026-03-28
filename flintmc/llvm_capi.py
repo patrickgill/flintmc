@@ -30,7 +30,7 @@ import weakref
 from pathlib import Path
 from typing import Any
 
-from .common import AsmError, UnsupportedArchitectureError
+from .errors import AsmError, UnsupportedArchitectureError
 
 VP = ctypes.c_void_p
 BOOL = ctypes.c_int
