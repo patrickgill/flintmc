@@ -1,10 +1,10 @@
 # flintmc
 
-LLVM-based multi-architecture assembler for Python. Drop-in replacement for keystone-engine.
+LLVM-based multi-architecture assembler and disassembler for Python. Drop-in replacement for keystone-engine.
 
 Calls directly into the LLVM already installed on your system. When you update LLVM, flintmc picks up new instruction support automatically.
 
-Supports any target your LLVM supports: x86, x86_64, ARM Thumb-2, AArch64, RISC-V, etc. Pure Python via ctypes, no vendored code, no compiled extensions.
+Supports any target your LLVM supports: x86, x86_64, ARM Thumb-2, AArch64, RISC-V, AVR, BPF, MSP430, LoongArch, etc. Pure Python via ctypes, no vendored code, no compiled extensions.
 
 ## Install
 
@@ -15,12 +15,13 @@ apt install llvm      # Linux
 pip install flintmc   # or: uv add flintmc
 ```
 
-## Usage
+## Examples
+
+### Assembly basics
 
 ```python
 from flintmc import Assembler
 
-# Pick a target profile
 asm = Assembler.x86_64()
 asm("mov rax, rbx; ret")          # b'\x48\x89\xd8\xc3'
 asm("syscall")                    # b'\x0f\x05'
@@ -33,69 +34,42 @@ asm = Assembler.aarch64()
 asm("mov x0, #42; ret")
 ```
 
-## Real-world examples
-
-### 1. Generating Shellcode (Linux x64)
-Fast, in-process assembly for exploit development or dynamic code generation.
+### Disassembly
 
 ```python
-from flintmc import Assembler
+from flintmc import Disassembler
 
-x64 = Assembler.x86_64()
-payload = x64("""
-    xor rdi, rdi
-    mov al, 0x3c    # sys_exit
-    syscall
-""")
-# b'H1\xff\xb0<\x0f\x05'
+dis = Disassembler.x86_64()
+for instr in dis(b'\x48\x89\xd8\xc3'):
+    print(f"{instr.offset:#x}: {instr.text}")
+# 0x0: mov rax, rbx
+# 0x3: ret
 ```
 
-### 2. Hot-patching ARM Firmware
-Replacing a function prologue with a hook. `flintmc` handles Thumb-2/ARM switching and unified syntax automatically.
+### Symbols and address
 
 ```python
-from flintmc import Assembler
+asm = Assembler.cortex_m7_dp()
 
-# Target: Cortex-M7 (Teensy 4.1, etc.)
-patcher = Assembler.cortex_m7_dp()
+# External symbols are injected as .set directives
+asm("bl handler", symbols={"handler": 0x80})
 
-# Assembler a jump to our hook function at 0x20001000
-# Note: LLVM-MC handles the PC-relative offset for you
-hook_addr = 0x20001000
-patch = patcher(f"ldr pc, ={hook_addr}\n.ltorg")
+# Base address for PC-relative instructions
+asm("adr r0, label", address=0x1000, symbols={"label": 0x1040})
 ```
 
-### 3. Kernel & Bootloader Directives
-Unlike basic assemblers, `flintmc` supports the full power of LLVM's `llvm-mc`, including data directives, alignment, and literal pools.
+### Per-instruction info
 
 ```python
-asm = Assembler.x86_32()
-gdt_entry = asm("""
-    .word 0xFFFF    # Limit
-    .word 0x0000    # Base (low)
-    .byte 0x00      # Base (mid)
-    .byte 0x9A      # Access (exec/read)
-    .byte 0xCF      # Granularity
-    .byte 0x00      # Base (high)
-""")
-```
-
-### 4. Keystone-to-flintmc migration
-If you're coming from `keystone-engine`, the transition is usually just a few lines.
-
-```python
-# Before (Keystone):
-# from keystone import KS_ARCH_X86, KS_MODE_64, Ks
-# ks = Ks(KS_ARCH_X86, KS_MODE_64)
-# code, _ = ks.asm("mov rax, 1")
-
-# After (flintmc):
-from flintmc import Assembler
 asm = Assembler.x86_64()
-code = asm("mov rax, 1")
+for instr in asm.asm_each("nop; mov rax, rbx; ret"):
+    print(f"{instr.offset:#x} [{instr.size}] {instr.source}")
+# 0x0 [1] nop
+# 0x1 [3] mov rax, rbx
+# 0x4 [1] ret
 ```
 
-## Multi-instruction support
+### Multi-instruction, labels, directives
 
 ```python
 asm = Assembler.cortex_m7_dp()
@@ -109,7 +83,53 @@ asm("ldr r0, =0xDEADBEEF\n.ltorg")
 asm("ite eq\nmoveq r0, #1\nmovne r0, #0")
 ```
 
-Custom targets:
+### Shellcode generation
+
+```python
+x64 = Assembler.x86_64()
+payload = x64("""
+    xor rdi, rdi
+    mov al, 0x3c
+    syscall
+""")
+```
+
+### Hot-patching ARM firmware
+
+```python
+patcher = Assembler.cortex_m7_dp()
+hook_addr = 0x20001000
+patch = patcher(f"ldr pc, ={hook_addr}\n.ltorg")
+```
+
+### Bootloader data directives
+
+```python
+asm = Assembler.x86_32()
+gdt_entry = asm("""
+    .word 0xFFFF    # Limit
+    .word 0x0000    # Base (low)
+    .byte 0x00      # Base (mid)
+    .byte 0x9A      # Access (exec/read)
+    .byte 0xCF      # Granularity
+    .byte 0x00      # Base (high)
+""")
+```
+
+### Round-trip verification
+
+`verify=True` disassembles the output and re-assembles it, checking that the bytes match. Catches encoding ambiguities and subtle misassembly.
+
+```python
+asm = Assembler.x86_64()
+asm("nop; ret", verify=True)          # passes — round-trips cleanly
+
+asm(".byte 0x48, 0x00", verify=True)  # AsmError: cannot disassemble output
+```
+
+Requires the C API backend (libLLVM) since disassembly is C API only. Only use with instructions — data directives (`.byte`, `.word`), literal pools (`.ltorg`), and alignment (`.align`) won't round-trip.
+
+### Custom targets
 
 ```python
 asm = Assembler(triple="riscv64", cpu="generic-rv64", features="+m,+a,+f,+d")
@@ -120,7 +140,61 @@ att = Assembler(triple="x86_64", preamble="")
 att("movq %rbx, %rax")
 ```
 
-## Profiles
+### Keystone migration
+
+```python
+# Before (Keystone):
+# from keystone import KS_ARCH_X86, KS_MODE_64, Ks
+# ks = Ks(KS_ARCH_X86, KS_MODE_64)
+# code, _ = ks.asm("mov rax, 1")
+
+# After (flintmc):
+from flintmc import Assembler
+asm = Assembler.x86_64()
+code = asm("mov rax, 1")
+```
+
+## API
+
+### Assembler
+
+```python
+Assembler(triple, *, cpu="", features="", preamble=None, backend=None)
+```
+
+- **`asm(source, *, address=None, symbols=None, verify=False)`** — assemble to bytes
+- **`asm_each(source)`** — assemble and return a list of `InstructionInfo(offset, size, code, source)`
+- **`close()`** — release backend resources for the calling thread
+- Callable: `asm("nop")` is the same as `asm.asm("nop")`
+
+`assemble` and `assemble_each` are aliases for `asm` and `asm_each`.
+
+### Disassembler
+
+```python
+Disassembler(triple, *, cpu="", features="", intel=True)
+```
+
+- **`disasm(code, *, address=0)`** — disassemble to a list of `DisasmInstruction(offset, size, code, text)`
+- **`available()`** — static method, checks if libLLVM is present
+- **`close()`** — release resources for the calling thread
+- Callable: `dis(code)` is the same as `dis.disasm(code)`
+
+`disassemble` is an alias for `disasm`.
+
+Requires the C API backend (libLLVM). No subprocess fallback.
+
+### Context managers
+
+```python
+with Assembler.x86_64() as asm:
+    code = asm("nop")
+
+with Disassembler.x86_64() as dis:
+    instrs = dis(code)
+```
+
+### Profiles
 
 ```python
 # x86
@@ -141,9 +215,19 @@ Assembler.cortex_m0()          # Cortex-M0, Thumb-1 only, no FPU
 
 # AArch64
 Assembler.aarch64()            # ARMv8-A 64-bit
+
+# RISC-V
+Assembler.riscv64()            # RV64IMAFD
+Assembler.riscv32()            # RV32IMAF
+
+# Other
+Assembler.avr()                # Atmel AVR (8-bit)
+Assembler.bpf()                # eBPF
+Assembler.msp430()             # TI MSP430 (16-bit)
+Assembler.loongarch64()        # LoongArch 64-bit
 ```
 
-## Error handling
+### Error handling
 
 ```python
 from flintmc import AsmError
@@ -154,11 +238,11 @@ except AsmError as e:
     print(e)  # LLVM diagnostic with adjusted line numbers
 ```
 
-## How it works
+### Backends
 
-**C API backend (default):** Assembly source is injected into a throwaway LLVM module via `LLVMSetModuleInlineAsm2()`, emitted as an ELF object via `LLVMTargetMachineEmitToMemoryBuffer()`, and the `.text` section is extracted in pure Python. All via ctypes into your system's `libLLVM`. A `LLVMContextSetDiagnosticHandler` intercepts assembly errors so they become `AsmError` exceptions.
+**C API (default):** Assembly source is injected into an LLVM module via `LLVMSetModuleInlineAsm2()`, emitted as an ELF object via `LLVMTargetMachineEmitToMemoryBuffer()`, and the `.text` section is extracted in pure Python. All via ctypes into your system's `libLLVM`. A `LLVMContextSetDiagnosticHandler` intercepts assembly errors so they become `AsmError` exceptions.
 
-**Subprocess backend (fallback):** If `libLLVM` isn't found, falls back to piping through `llvm-mc -filetype=obj -o -`.
+**Subprocess (fallback):** If `libLLVM` isn't found, falls back to piping through `llvm-mc -filetype=obj -o -`.
 
 Force a backend with `backend="capi"` or `backend="subprocess"`.
 
@@ -187,7 +271,7 @@ Tested on macOS (Apple Silicon + Intel) and Linux. Windows support is planned �
 
 ```
 uv sync --group dev
-uv run pytest                                       # core + x86 tests (1400+)
+uv run pytest                                       # 5100+ tests
 
 uv sync --group compat
 DYLD_LIBRARY_PATH=/opt/homebrew/lib \

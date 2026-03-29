@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.3.0
+
+### New features
+- **Disassembler**: `Disassembler` class using LLVM's `LLVMDisasmInstruction` C API. Profiles for x86_64, x86_32, AArch64, ARM Thumb, RISC-V. Thread-safe via TLS. C API only (no subprocess fallback).
+- **Symbol injection**: `symbols={"handler": 0x8000}` parameter on `asm()`. Injects `.set` directives with name validation to prevent injection. Branch targets on x86 are resolved via ELF relocation patching.
+- **Base address**: `address=0x1000` parameter on `asm()`. Uses `.org` internally, capped at 1 MiB.
+- **Per-instruction info**: `asm_each()` returns `InstructionInfo(offset, size, code, source)` for each instruction. Uses cumulative assembly for correct label/forward-reference handling.
+- **Round-trip verification**: `verify=True` disassembles output and re-assembles it, raising `AsmError` on byte mismatch.
+- **Context manager**: `Assembler` and `Disassembler` support `with` statements and `close()`.
+- **Extensible preambles**: `register_default_preamble(prefix, preamble)` for custom architectures.
+
+### Object format support
+- **Mach-O**: 32-bit and 64-bit `__text` extraction. Apple triples (`arm64-apple-macos`) now work.
+- **COFF**: `.text` extraction for Windows triples (`x86_64-pc-windows-msvc`).
+- **Big-endian ELF**: Reads `EI_DATA` byte to select endianness. Required for PowerPC, Sparc, SystemZ, MIPS targets.
+- **ELF relocation patching**: Applies `R_X86_64_PC32`/`R_X86_64_PLT32` (ELF64) and `R_386_PC32` (ELF32) relocations for branch-to-symbol resolution.
+
+### Architecture profiles
+- New profiles: `riscv64()`, `riscv32()`, `avr()`, `bpf()`, `msp430()`, `loongarch64()`.
+- Removed `wasm32`/`wasm64` arch mappings (LLVM emits wasm binary, not ELF/Mach-O/COFF).
+
+### Fixes
+- `arm64` triple prefix now correctly resolves to AArch64 (not ARM).
+- `armv7a`/`armv8a` triples get `.arm` preamble (not `.thumb`).
+- `_split_semicolons`: tracks single quotes, treats `#42` and `#(expr)` as immediates (not comments).
+- Linux `libLLVM` discovery: tighter glob, catches `RuntimeError` from component libraries.
+- `set_libllvm_path()` invalidates cached backend detection.
+
+### Refactoring
+- Split `common.py` into `errors.py`, `objfile.py`, `common.py`.
+- Removed unused `_active_backends` counter.
+- Removed dead imports, commented-out logging.
+
+### Testing
+- 5166 tests (up from ~1400). Includes concurrency stress, adversarial symbol injection, round-trip verification, multi-architecture coverage.
+
 ## 0.2.0
 
 - LLVM C API backend via ctypes — default when `libLLVM` is available

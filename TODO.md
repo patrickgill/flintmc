@@ -1,51 +1,49 @@
 # TODO
-## Architecture & Refactoring
 
-- [ ] **Split Backends**: Move `subprocess` backend logic out of `assembler.py` into `subprocess_backend.py`.
-- [ ] **Direct Emission**: Investigate bypassing ELF generation to emit raw machine code directly from the MC layer for better performance.
+## Next up
+
+- [ ] **ELF triple normalization**: Assemble all targets as ELF internally (strip OS/vendor from triple). Eliminates Mach-O/COFF parsing on the hot path, avoids COFF `.set`+`jmp` LLVM crash, and unifies relocation patching.
+- [ ] **Unlimited base address**: For x86 (where relocations exist), skip `.org` and apply `base` in the relocation formula directly. Removes the 1 MiB limit for x86 targets.
+- [ ] **Cortex-M expansion**: `Assembler.cortex_m23()`, `Assembler.cortex_m55()`.
+- [ ] **Cortex-A profiles**: `Assembler.armv7a()`, `Assembler.armv8a()`.
+- [ ] **Add verify=True to applicable tests**: Opt in to round-trip verification across the test suite.
+
+## Backlog
+
+- [ ] **Direct emission**: Investigate bypassing ELF generation to emit raw machine code directly from the MC layer for better performance.
 - [ ] **Extensibility**: Ensure the `Assembler` factory can easily accommodate future backends (e.g., Keystone/Capstone for round-tripping).
-- [ ] **Architecture Inference**: Improve `_arch_for_triple` to potentially handle unmapped triples by attempting to resolve symbols for common prefixes automatically.
-
-## API Enhancements
-
-- [ ] **Instruction Count**: Add `asm_info()` or update `asm()` to return a result object with `.bytes` and `.count` (instruction count).
-- [ ] **Big-Endian Support**: Update ELF parser to detect and handle Big-Endian objects (required for MIPS/PPC).
-- [ ] **Symbol Injection**: Allow users to provide a mapping of external symbols to addresses (similar to Nyxstone).
-- [ ] **Address-Aware Assembly**: Support base address (PC) for position-relative instructions.
-- [ ] **Round-trip validation**: Add an optional validation step that disassembles the output (via Capstone) to verify it matches the input mnemonic.
-- [ ] **`asm_each()`**: Return per-instruction boundaries (offset, size, bytes) for breakpoint placement and fine-grained binary analysis.
-
-## Profiles & Architectures
-...
+- [ ] **Architecture inference**: Improve `_arch_for_triple` to handle unmapped triples by attempting to resolve symbols for common prefixes automatically.
+- [ ] **Windows validation**: Verify discovery logic on a real Windows environment.
+- [ ] **Versioned Linux discovery**: Prioritize the highest available version if multiple `libLLVM-N.so` are found.
 - [ ] **Dockerfile**: Finalize whether to keep the `Dockerfile` in the repo for consistent multi-distro testing.
 - [ ] **Logging**: Add a `logging` logger to record LLVM discovery steps and backend selection events.
 
-## Documentation
-- [ ] **Cortex-M Expansion**: `Assembler.cortex_m23()`, `Assembler.cortex_m55()`.
-- [ ] **Cortex-A Profiles**: `Assembler.armv7a()`, `Assembler.armv8a()`.
-
-## Platform & Discovery
-
-- [ ] **Windows Validation**: Verify the new `win32` discovery logic on a real Windows environment.
-- [ ] **Versioned Linux Discovery**: Refine the `glob` logic to prioritize the highest available version if multiple `libLLVM-N.so` are found.
-- [ ] **Dockerfile**: Finalize whether to keep the `Dockerfile` in the repo for consistent multi-distro testing.
-
-## Documentation
-
-- [ ] **README Update**:
-    - [ ] Document the `--backend` flag for `pytest`.
-    - [ ] Add technical details for `register_arch_mapping`.
-    - [ ] Add technical details for `set_libllvm_path`.
-    - [ ] Update Windows support status.
-- [ ] **Testing Guide**: Add a dedicated section on how to run cross-validation tests (GAS, Keystone, Nyxstone).
-
 ## Done
 
-- [x] **Specific Error Reporting**: C API failures now report the exact LLVM function name and diagnostic string.
-- [x] **Unified Exception Hierarchy**: `AsmError` and `UnsupportedArchitectureError` are consolidated and exported.
-- [x] **Expanded Arch Mapping**: Support for WebAssembly, PowerPC, Sparc, SystemZ, Mips, LoongArch.
-- [x] **Windows Support**: Implementation of dynamic discovery for `LLVM-C.dll` and `llvm-mc.exe`.
-- [x] **Linux Discovery**: Robust search for versioned `libLLVM.so` using `glob` and multiarch paths.
-- [x] **True Concurrency**: Thread-Local Storage (TLS) for C API backends allows parallel assembly.
-- [x] **Resource Management**: Proactive finalization of LLVM objects and safe interpreter teardown.
-- [x] **Technical Documentation**: Comprehensive `TECHNICAL.md` and ecosystem `COMPARISON.md`.
+- [x] **Disassembler**: `Disassembler` class with `LLVMDisasmInstruction` C API.
+- [x] **Symbol injection**: `symbols={}` parameter with `.set` directives and name validation.
+- [x] **ELF relocation patching**: `R_X86_64_PC32`, `R_X86_64_PLT32` (ELF64), `R_386_PC32` (ELF32).
+- [x] **Base address**: `address=` parameter via `.org` (max 1 MiB).
+- [x] **Per-instruction info**: `asm_each()` with `InstructionInfo`.
+- [x] **Round-trip verification**: `verify=True`.
+- [x] **Mach-O support**: 32/64-bit `__text` extraction.
+- [x] **COFF support**: `.text` extraction for Windows triples.
+- [x] **Big-endian ELF**: Reads `EI_DATA` for endianness.
+- [x] **Context manager**: `close()` + `with` statement on `Assembler` and `Disassembler`.
+- [x] **Extensible preambles**: `register_default_preamble()`.
+- [x] **New profiles**: riscv64/32, avr, bpf, msp430, loongarch64.
+- [x] **arm64 prefix fix**: Sorted by prefix length so `arm64` matches before `arm`.
+- [x] **armv*a preamble fix**: `.arm` not `.thumb` for Cortex-A triples.
+- [x] **Semicolon splitter fixes**: Single quotes, `#` immediate heuristic.
+- [x] **Linux discovery fix**: Tighter glob, catches RuntimeError from component libraries.
+- [x] **Backend cache invalidation**: `set_libllvm_path()` resets `_resolved_default`.
+- [x] **Refactored common.py**: Split into `errors.py`, `objfile.py`, `common.py`.
+- [x] **Specific error reporting**: C API failures report exact LLVM function name and diagnostic.
+- [x] **Unified exception hierarchy**: `AsmError` and `UnsupportedArchitectureError`.
+- [x] **Expanded arch mapping**: PowerPC, Sparc, SystemZ, Mips, LoongArch, AVR, BPF, MSP430.
+- [x] **Windows support**: Discovery for `LLVM-C.dll` and `llvm-mc.exe`.
+- [x] **Linux discovery**: Versioned `libLLVM.so` using `glob` and multiarch paths.
+- [x] **True concurrency**: Thread-Local Storage for C API and disassembler backends.
+- [x] **Resource management**: `weakref.finalize` for LLVM objects.
+- [x] **Technical documentation**: `TECHNICAL.md` and `COMPARISON.md`.
+- [x] **5166 tests**: Concurrency stress, adversarial symbol injection, multi-arch, round-trip.

@@ -1,56 +1,70 @@
 # Assembly Comparison: flintmc, Nyxstone, and Keystone
 
-This document outlines the technical differences between `flintmc` and established assembly frameworks like **Nyxstone** and **Keystone**, specifically focusing on features that those projects provide which are currently outside the scope of `flintmc`.
-
 ## Overview
 
 | Feature | flintmc | Nyxstone | Keystone |
 | :--- | :--- | :--- | :--- |
 | **Engine** | LLVM C API / `llvm-mc` | LLVM C++ Internals | LLVM (Internal Fork) |
-| **Primary Goal** | Lightweight, Fast Python Assembler | Advanced Binary Rewriting | Universal Assembly Engine |
-| **Implementation** | Pure Python + `ctypes` | C++ Extension | C library + Bindings |
-| **Disassembly** | No | Yes | No (uses Capstone) |
+| **Install** | `pip install` — pure Python | C++ extension, needs compiler | C library + bindings |
+| **LLVM** | System LLVM (7.0+) | Requires LLVM 15-18 | Frozen fork (~3.x) |
+| **Disassembly** | Yes | Yes | No (uses Capstone) |
+| **Symbol injection** | Yes (`.set` + relocation patching) | Yes (native MCSymbol) | No |
+| **Base address** | Yes (`.org`, max 1 MiB) | Yes (native, unlimited) | No |
+| **Per-instruction info** | Yes (`asm_each()`) | Yes | Count only |
+| **Round-trip verify** | Yes (`verify=True`) | No | No |
+| **Concurrency** | True parallel (TLS) | Global lock | Global lock |
+| **Object formats** | ELF + Mach-O + COFF | N/A (no object files) | N/A (raw output) |
+| **Context manager** | Yes | No | No |
 
 ---
 
-## 1. What Nyxstone has over flintmc
+## How each tool works
 
-**Nyxstone** is a specialized library developed by Emproof for security researchers and binary engineers. Because it is a C++ extension that hooks directly into LLVM's internal C++ classes (rather than the stable C API used by `flintmc`), it offers several "power user" features:
+**flintmc**: Injects assembly into an LLVM module via the C API, emits an object file in memory, and extracts the `.text` section in pure Python. For symbol injection, applies ELF relocations to resolve branch targets. Falls back to `llvm-mc` subprocess when `libLLVM` is unavailable.
 
-### Advanced Symbol and Label Mapping
-Nyxstone's standout feature is the ability to resolve external symbols during assembly.
-- **External Maps**: You can pass a Python dictionary of `{ "my_func": 0x12345678 }` to Nyxstone. It will correctly resolve `call my_func` to that specific address.
-- **Base Addressing**: You can specify the `PC` (Program Counter) where the code will eventually reside. This ensures that position-relative instructions (like `adr` on AArch64 or `rip`-relative on x86_64) are calculated with bit-perfect accuracy for that specific memory location.
-- **In `flintmc`**: We rely on LLVM's internal label resolution. While internal labels (e.g., `loop: ... jmp loop`) work perfectly, there is no direct way via the C API to inject external absolute addresses into the middle of a string-based assembly block.
+**Nyxstone**: Hooks directly into LLVM's internal C++ `MCAssembler` / `MCStreamer` classes. Assembles each instruction and reads encoded bytes from `MCInst`. Never produces an object file. This gives it native symbol resolution and unlimited base addresses, but requires a C++ build step.
 
-### Integrated Disassembly
-Nyxstone is a "bi-directional" engine. It can disassemble raw bytes into assembly strings and provide detailed metadata about every instruction (registers accessed, memory operands, etc.). `flintmc` is strictly an assembler.
-
-### Low-Level MC Layer Access
-By using the C++ API, Nyxstone can access internal LLVM optimizations and "hidden" flags that are not exposed in the stable C API. This allows for extremely fine-grained control over the generation of instruction encodings that might be required for exotic obfuscation or patching.
+**Keystone**: Uses a forked, vendored copy of LLVM (~v3.x). Ships as a standalone C library with language bindings. No system LLVM dependency, but no modern instruction support.
 
 ---
 
-## 2. What Keystone has over flintmc
+## What Nyxstone has over flintmc
 
-**Keystone** is the industry standard for lightweight assembly, though it is based on a significantly older version of LLVM (v3.x/v4.x).
+### Native symbol resolution
+Nyxstone resolves symbols by injecting them into LLVM's `MCSymbol` table. This works uniformly across all architectures and instruction types. flintmc uses `.set` directives + relocation patching, which works for all practical cases on ELF targets but has a known LLVM crash on Windows COFF targets for branch instructions.
 
-### Wide Architecture Support
-Because Keystone is an independent C library, it has been ported to almost every imaginable platform and OS. While `flintmc` supports any architecture LLVM supports (x86, ARM, AArch64, RISC-V, MIPS, etc.), it requires a `libLLVM` or `llvm-mc` installation on the host system. Keystone carries its engine with it.
+### Unlimited base address
+Nyxstone sets the assembly origin by configuring `MCAssembler` directly. flintmc uses `.org` which pads the object file — capped at 1 MiB to avoid excessive memory use.
 
-### Statement-Level Control
-Keystone allows you to assemble instructions one-by-one and maintain state between them more easily than the "module-based" approach used by the LLVM C API.
-
-### Significant Ecosystem
-As the older, more established project, Keystone has thousands of community plugins, integrations with debuggers (OllyDbg, x64dbg), and extensive documentation for edge-case assembly requirements.
+### Direct MC layer access
+Nyxstone can access internal LLVM optimizations and flags not exposed in the C API. This allows exotic encoding control that flintmc cannot replicate.
 
 ---
 
-## 3. Why choose flintmc instead?
+## What Keystone has over flintmc
 
-Despite lacking the advanced binary-patching features of Nyxstone, `flintmc` has several advantages for standard development:
+### Self-contained
+Keystone ships its own LLVM. No system dependency. flintmc requires `libLLVM` or `llvm-mc` on the host.
 
-1.  **Zero-Compilation Install**: Unlike Nyxstone or Keystone's Python bindings, `pip install flintmc` is a pure-Python wheel. It does not require a local C++ compiler (no `gcc` or `clang` invocation) during installation. It simply "plugs in" to the pre-compiled `libLLVM` already provided by your OS package manager (`brew`, `apt`, etc.).
-2.  **Modern LLVM**: `flintmc` uses whatever LLVM is on your system (LLVM 15, 16, 17, 18+). Keystone is stuck on a decade-old fork of LLVM, meaning it lacks support for modern instructions (AVX-512, newer ARM extensions, etc.).
-3.  **Performance**: `flintmc` is tuned for speed. By reusing LLVM modules and using Thread-Local Storage, it can achieve ~0.15ms per assembly call, making it suitable for high-throughput tasks like JIT compilation or massive test-case generation.
-4.  **Simplicity**: The codebase is small, readable, and written in pure Python. It is significantly easier to audit and customize for specific project needs.
+### Ecosystem
+Thousands of community plugins, debugger integrations (OllyDbg, x64dbg), and extensive edge-case documentation.
+
+---
+
+## What flintmc has over both
+
+1.  **Zero-compilation install**: `pip install flintmc` — no C++ compiler needed.
+2.  **Modern LLVM**: Uses whatever LLVM is on your system (7.0 through 22+). Automatically picks up new instruction support.
+3.  **True concurrency**: Thread-Local Storage instead of global locks.
+4.  **Round-trip verification**: `verify=True` catches encoding mismatches that neither Nyxstone nor Keystone detect.
+5.  **Disassembly + assembly in one package**: No need for a separate Capstone install.
+6.  **Subprocess fallback**: Works even without `libLLVM` (slower, but functional).
+7.  **Three object format parsers**: ELF, Mach-O, COFF — covers Linux, macOS, and Windows targets.
+
+---
+
+## Known limitations
+
+- **COFF branch relocations**: LLVM segfaults when emitting `jmp`/`call` to `.set` symbols with COFF output. This is an upstream LLVM bug. Data references (mov, lea) work fine on COFF.
+- **Base address limit**: `.org` approach caps at 1 MiB. Use `.org` directly in the source for larger addresses, or compute section-relative offsets in the `symbols` dict.
+- **WebAssembly**: LLVM emits wasm binary format, not ELF/Mach-O/COFF. Not supported.
