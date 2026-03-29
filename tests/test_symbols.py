@@ -276,6 +276,110 @@ class TestX86BranchRelocation:
 
 
 # ---------------------------------------------------------------------------
+# Adversarial relocation tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
+class TestAdversarialRelocations:
+    """Edge cases and stress tests for ELF relocation patching."""
+
+    @pytest.fixture(scope="class")
+    def x86_att(self):
+        return Assembler(triple="x86_64", preamble="")
+
+    def test_target_zero(self, x86_att):
+        """Branch to address 0."""
+        code = x86_att("jmp target", symbols={"target": 0})
+        offset = struct.unpack_from("<i", code, 1)[0]
+        assert 5 + offset == 0
+
+    def test_target_negative(self, x86_att):
+        """Negative target (two's complement)."""
+        code = x86_att("jmp target", symbols={"target": -16})
+        offset = struct.unpack_from("<i", code, 1)[0]
+        assert 5 + offset == -16
+
+    def test_target_max_positive_32bit(self, x86_att):
+        """Branch to near the 32-bit signed limit."""
+        code = x86_att("call target", symbols={"target": 0x7FFF_FFF0})
+        offset = struct.unpack_from("<i", code, 1)[0]
+        assert 5 + offset == 0x7FFF_FFF0
+
+    def test_branch_to_self(self, x86_att):
+        """jmp to address 0 is a backward branch to before the instruction."""
+        code = x86_att("jmp self", symbols={"self": 0})
+        offset = struct.unpack_from("<i", code, 1)[0]
+        assert offset == -5  # PC is at 5 after jmp, -5 gets back to 0
+
+    def test_conditional_branch(self, x86_att):
+        """Conditional branches (je/jne) also use PC32 relocations."""
+        code = x86_att("testl %eax, %eax\nje target", symbols={"target": 0x200})
+        # testl is 2 bytes, je near is 6 bytes (0f 84 xx xx xx xx)
+        assert len(code) == 8
+        offset = struct.unpack_from("<i", code, 4)[0]
+        assert 8 + offset == 0x200
+
+    def test_mixed_branch_and_data(self, x86_att):
+        """Branch and data reference to different symbols in same block."""
+        code = x86_att(
+            "jmp handler\nmovq $0, addr",
+            symbols={"handler": 0x1000, "addr": 0xBEEF},
+        )
+        # jmp should resolve correctly
+        off = struct.unpack_from("<i", code, 1)[0]
+        assert 5 + off == 0x1000
+        # addr should appear as an absolute value in the mov
+        assert (0xBEEF).to_bytes(4, "little") in code
+
+    def test_unused_symbol_no_effect(self, x86_att):
+        """Extra symbols that aren't referenced don't affect output."""
+        code1 = x86_att("jmp a", symbols={"a": 0x100})
+        code2 = x86_att("jmp a", symbols={"a": 0x100, "b": 0xDEAD, "c": 0xBEEF})
+        assert code1 == code2
+
+    def test_symbol_overrides_label(self, x86_att):
+        """.set symbol takes precedence over a local label."""
+        code_sym = x86_att("jmp target", symbols={"target": 0x500})
+        code_label = x86_att("target: nop\njmp target")
+        assert code_sym != code_label
+
+    def test_large_code_block(self, x86_att):
+        """Many instructions with a branch at the end."""
+        nops = "\n".join(["nop"] * 100)
+        code = x86_att(f"{nops}\njmp target", symbols={"target": 0x8000})
+        # 100 nops (1 byte each) + jmp (5 bytes)
+        assert len(code) == 105
+        offset = struct.unpack_from("<i", code, 101)[0]
+        assert 105 + offset == 0x8000
+
+    def test_branch_with_address_and_symbols(self, x86_att):
+        """Triple combo: address + symbols + branch relocation."""
+        code = x86_att(
+            "jmp handler",
+            symbols={"handler": 0x8000},
+            address=0x1000,
+        )
+        offset = struct.unpack_from("<i", code, 1)[0]
+        # Code is at 0x1000, jmp imm32 starts at 0x1001, RIP after = 0x1005
+        assert 0x1000 + 5 + offset == 0x8000
+
+    def test_two_calls_same_target(self, x86_att):
+        """Two calls to same target get different offsets (different PC)."""
+        code = x86_att("call f\ncall f", symbols={"f": 0x1000})
+        off1 = struct.unpack_from("<i", code, 1)[0]
+        off2 = struct.unpack_from("<i", code, 6)[0]
+        assert 5 + off1 == 0x1000
+        assert 10 + off2 == 0x1000
+        assert off1 != off2  # different PC means different offset
+
+    def test_intel_syntax_data_still_works(self):
+        """Intel syntax doesn't support jmp to .set symbols, but data refs work."""
+        x86 = Assembler.x86_64()
+        code = x86("mov rax, my_func", symbols={"my_func": 0xDEAD_BEEF})
+        assert (0xDEAD_BEEF).to_bytes(4, "little") in code
+
+
+# ---------------------------------------------------------------------------
 # x86_64 absolute addresses
 # ---------------------------------------------------------------------------
 
