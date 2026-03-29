@@ -18,12 +18,16 @@ _LC_SEGMENT = 0x01
 _COFF_MACHINES = {0x8664, 0x014c, 0xAA64, 0x01c4, 0x5064, 0x0200}
 
 # ELF section types
+_SHT_REL = 9
 _SHT_RELA = 4
 _SHT_SYMTAB = 2
 
 # x86_64 relocation types — PC-relative 32-bit
 _R_X86_64_PC32 = 2
 _R_X86_64_PLT32 = 4
+
+# i386 relocation types
+_R_386_PC32 = 2
 
 
 def _elf_endian(elf: bytes) -> str:
@@ -77,7 +81,32 @@ def _extract_text_elf32(elf: bytes, e: str) -> bytes:
     e_shnum = struct.unpack_from(f"{e}H", elf, 0x30)[0]
     e_shstrndx = struct.unpack_from(f"{e}H", elf, 0x32)[0]
     shdr_struct = struct.Struct(f"{e}IIIIIIIIII")
-    return _find_text(elf, e_shoff, e_shentsize, e_shnum, e_shstrndx, shdr_struct, 4, 5, e)
+
+    strtab_shdr = shdr_struct.unpack_from(elf, e_shoff + e_shstrndx * e_shentsize)
+    strtab = elf[strtab_shdr[4]:strtab_shdr[4] + strtab_shdr[5]]
+
+    text_bytes = None
+    text_idx = None
+    for i in range(e_shnum):
+        off = e_shoff + i * e_shentsize
+        name_off = struct.unpack_from(f"{e}I", elf, off)[0]
+        if strtab[name_off:name_off + 6] == b".text\x00":
+            shdr = shdr_struct.unpack_from(elf, off)
+            text_bytes = bytearray(elf[shdr[4]:shdr[4] + shdr[5]])
+            text_idx = i
+            break
+
+    if text_bytes is None:
+        raise AsmError("no .text section in ELF output")
+
+    # Apply .rel.text relocations (SHT_REL — no explicit addend)
+    for i in range(e_shnum):
+        shdr = shdr_struct.unpack_from(elf, e_shoff + i * e_shentsize)
+        if shdr[1] == _SHT_REL and shdr[7] == text_idx:
+            _apply_elf32_rel(elf, e, shdr, shdr_struct, e_shoff, e_shentsize, text_bytes)
+            break
+
+    return bytes(text_bytes)
 
 
 def _extract_text_elf64(elf: bytes, e: str) -> bytes:
@@ -151,6 +180,42 @@ def _apply_elf64_rela(elf, e, rela_shdr, shdr_struct, e_shoff, e_shentsize, text
             value = (st_value + r_addend - r_offset) & 0xFFFFFFFF
             struct.pack_into("<I", text, r_offset, value)
         # Other relocation types: leave as-is (already resolved or unsupported)
+
+
+def _apply_elf32_rel(elf, e, rel_shdr, shdr_struct, e_shoff, e_shentsize, text):
+    """Apply ELF32 REL relocations to .text bytes.
+
+    Unlike RELA, REL has no explicit addend — the addend is the
+    existing value at the relocation offset in .text.
+    """
+    rel_off = rel_shdr[4]
+    rel_size = rel_shdr[5]
+    rel_entsize = rel_shdr[9]
+    if rel_entsize == 0:
+        return
+
+    symtab_shdr = shdr_struct.unpack_from(elf, e_shoff + rel_shdr[6] * e_shentsize)
+    sym_entsize = symtab_shdr[9]
+
+    n_rel = rel_size // rel_entsize
+    for j in range(n_rel):
+        off = rel_off + j * rel_entsize
+        r_offset, r_info = struct.unpack_from(f"{e}II", elf, off)
+        r_type = r_info & 0xFF
+        r_sym_idx = r_info >> 8
+
+        if r_sym_idx != 0 and sym_entsize:
+            sym_off = symtab_shdr[4] + r_sym_idx * sym_entsize
+            # Elf32_Sym: st_name(I) st_value(I) st_size(I) st_info(B) st_other(B) st_shndx(H)
+            st_value = struct.unpack_from(f"{e}I", elf, sym_off + 4)[0]
+        else:
+            st_value = 0
+
+        if r_type == _R_386_PC32:
+            # S + A - P where A = existing int32 at r_offset
+            implicit_addend = struct.unpack_from(f"{e}i", text, r_offset)[0]
+            value = (st_value + implicit_addend - r_offset) & 0xFFFFFFFF
+            struct.pack_into("<I", text, r_offset, value)
 
 
 def _find_text(elf, e_shoff, e_shentsize, e_shnum, e_shstrndx, shdr_struct, off_idx, size_idx, e):
