@@ -216,6 +216,66 @@ class TestInteraction:
 
 
 # ---------------------------------------------------------------------------
+# x86 branch relocation (R_X86_64_PC32)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
+class TestX86BranchRelocation:
+    """Verify that x86 branch-to-symbol resolves via relocation patching."""
+
+    @pytest.fixture(scope="class")
+    def x86_att(self):
+        return Assembler(triple="x86_64", preamble="")
+
+    def test_jmp_absolute(self, x86_att):
+        code = x86_att("jmp target", symbols={"target": 0x8000})
+        offset = struct.unpack_from("<i", code, 1)[0]
+        assert 5 + offset == 0x8000
+
+    def test_call_absolute(self, x86_att):
+        code = x86_att("call target", symbols={"target": 0x4000})
+        offset = struct.unpack_from("<i", code, 1)[0]
+        assert 5 + offset == 0x4000
+
+    def test_jmp_with_address(self, x86_att):
+        """Branch from address=0x1000 to target=0x8000."""
+        code = x86_att("jmp target", symbols={"target": 0x8000}, address=0x1000)
+        offset = struct.unpack_from("<i", code, 1)[0]
+        assert 0x1000 + 5 + offset == 0x8000
+
+    def test_call_with_address(self, x86_att):
+        code = x86_att("call target", symbols={"target": 0x8000}, address=0x1000)
+        offset = struct.unpack_from("<i", code, 1)[0]
+        assert 0x1000 + 5 + offset == 0x8000
+
+    def test_multiple_branches(self, x86_att):
+        """Two branches to the same target get correct independent offsets."""
+        code = x86_att("jmp target\ncall target", symbols={"target": 0x8000})
+        off1 = struct.unpack_from("<i", code, 1)[0]
+        off2 = struct.unpack_from("<i", code, 6)[0]
+        assert 5 + off1 == 0x8000
+        assert 10 + off2 == 0x8000
+
+    def test_multiple_targets(self, x86_att):
+        code = x86_att("jmp a\njmp b", symbols={"a": 0x1000, "b": 0x2000})
+        off1 = struct.unpack_from("<i", code, 1)[0]
+        off2 = struct.unpack_from("<i", code, 6)[0]
+        assert 5 + off1 == 0x1000
+        assert 10 + off2 == 0x2000
+
+    def test_backward_branch(self, x86_att):
+        """Branch to address 0 (before the code)."""
+        code = x86_att("jmp target", symbols={"target": 0}, address=0x100)
+        offset = struct.unpack_from("<i", code, 1)[0]
+        assert 0x100 + 5 + offset == 0
+
+    def test_no_relocation_without_symbols(self, x86_att):
+        """Without symbols param, .text bytes are returned as-is (no patching)."""
+        code = x86_att("nop")
+        assert code == b"\x90"
+
+
+# ---------------------------------------------------------------------------
 # x86_64 absolute addresses
 # ---------------------------------------------------------------------------
 

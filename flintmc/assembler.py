@@ -619,3 +619,7 @@ class Assembler:
         """Clear the assembly result cache."""
         with self._lock:
             self._cache.clear()
+
+    # Aliases
+    assemble = asm
+    assemble_each = asm_each
