@@ -80,6 +80,11 @@ class DisasmInstruction:
     address: int = 0
 
     @property
+    def bytes(self) -> bytes:
+        """Raw instruction bytes (alias for ``code``)."""
+        return self.code
+
+    @property
     def mnemonic(self) -> str:
         """Instruction mnemonic (e.g. 'mov', 'nop')."""
         return self.text.split(None, 1)[0] if self.text else ""
@@ -155,6 +160,15 @@ class Disassembler:
         self._local = threading.local()
         self._intel = intel
 
+        # Minimum instruction size for skip-on-error alignment
+        t = triple.lower()
+        if "thumb" in t or "arm" in t:
+            self._min_insn_size = 2
+        elif "aarch64" in t:
+            self._min_insn_size = 4
+        else:
+            self._min_insn_size = 1
+
     def _get_ctx(self) -> Any:
         """Get or create the thread-local disassembler context."""
         if not hasattr(self._local, "ctx"):
@@ -177,7 +191,14 @@ class Disassembler:
             self._local.ctx = ctx
         return self._local.ctx
 
-    def disasm(self, code: bytes, *, address: int = 0) -> list[DisasmInstruction]:
+    def disasm(
+        self,
+        code: bytes,
+        *,
+        address: int = 0,
+        count: int = 0,
+        strict: bool = False,
+    ) -> list[DisasmInstruction]:
         """Disassemble machine code bytes.
 
         Parameters
@@ -186,15 +207,20 @@ class Disassembler:
             Raw machine code to disassemble.
         address : int
             Base address for PC-relative display (default 0).
+        count : int
+            Maximum number of instructions to decode (0 = all).
+        strict : bool
+            If True, raise on undecodable bytes.
+            If False (default), skip undecodable bytes and continue.
 
         Returns
         -------
-        List of DisasmInstruction(offset, size, code, text).
+        List of DisasmInstruction.
 
         Raises
         ------
         AsmError
-            If a byte cannot be decoded.
+            If *strict* is True and a byte cannot be decoded.
         """
         ctx = self._get_ctx()
         lib = self._lib
@@ -205,6 +231,8 @@ class Disassembler:
 
         off = 0
         while off < len(code):
+            if count and len(results) >= count:
+                break
             ptr = ctypes.cast(
                 ctypes.addressof(arr) + off,
                 ctypes.POINTER(ctypes.c_uint8),
@@ -213,10 +241,13 @@ class Disassembler:
                 ctx, ptr, len(code) - off, address + off, out, 512,
             )
             if sz == 0:
-                raise AsmError(
-                    f"Cannot disassemble at offset {off}: "
-                    f"0x{code[off]:02x}"
-                )
+                if strict:
+                    raise AsmError(
+                        f"Cannot disassemble at offset {off}: "
+                        f"0x{code[off]:02x}"
+                    )
+                off += self._min_insn_size
+                continue
             text = out.value.decode().strip()
             results.append(DisasmInstruction(
                 offset=off,
@@ -245,9 +276,16 @@ class Disassembler:
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
-    def __call__(self, code: bytes, *, address: int = 0) -> list[DisasmInstruction]:
+    def __call__(
+        self,
+        code: bytes,
+        *,
+        address: int = 0,
+        count: int = 0,
+        strict: bool = False,
+    ) -> list[DisasmInstruction]:
         """Shorthand for ``disasm(code)``."""
-        return self.disasm(code, address=address)
+        return self.disasm(code, address=address, count=count, strict=strict)
 
     # Alias: nyxstone-compatible name
     disassemble = disasm

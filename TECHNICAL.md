@@ -67,6 +67,8 @@ LLVM's C API has no direct "assemble this string" function. `flintmc` implements
 
 Uses `LLVMCreateDisasmCPUFeatures` to create a thread-local disassembler context, then `LLVMDisasmInstruction` to decode each instruction sequentially. Intel syntax is enabled for x86 targets via `LLVMSetDisasmOptions`.
 
+When `strict=False` (the default), undecodable bytes are skipped by advancing the offset by the architecture's minimum instruction size (1 byte for x86, 2 for Thumb/ARM, 4 for AArch64). This allows disassembly of firmware memory dumps containing interleaved code and data (literal pools, jump tables). When `strict=True`, an `AsmError` is raised on the first undecodable byte.
+
 ---
 
 ## Object File Parsing

@@ -54,10 +54,14 @@ class TestX86:
     def test_empty_input(self, dis):
         assert dis(b"") == []
 
-    def test_invalid_bytes(self, dis):
+    def test_invalid_bytes_strict(self, dis):
         # 0x06 is not a valid x86_64 instruction (push es, only valid in 32-bit)
         with pytest.raises(AsmError, match="Cannot disassemble"):
-            dis(b"\x06")
+            dis(b"\x06", strict=True)
+
+    def test_invalid_bytes_skipped(self, dis):
+        """Default non-strict mode skips bad bytes."""
+        assert dis(b"\x06") == []
 
     def test_multi_byte_instructions(self, dis):
         code = bytes([0x0f, 0x05])  # syscall
@@ -287,11 +291,163 @@ class TestCapstoneCompat:
         r2 = dis(b"\x90", address=0x1000)
         assert r1[0] == r2[0]
 
+    # --- .bytes alias ---
+
+    def test_bytes_alias(self, dis):
+        """.bytes returns same object as .code."""
+        result = dis(b"\x90")
+        assert result[0].bytes is result[0].code
+        assert result[0].bytes == b"\x90"
+
+    def test_bytes_multi_byte(self, dis):
+        """.bytes works for multi-byte instructions."""
+        code = b"\xb8\x01\x00\x00\x00"  # mov eax, 1
+        result = dis(code)
+        assert result[0].bytes == code
+
     # --- empty input ---
 
     def test_empty_gives_no_addresses(self, dis):
         """Empty input produces no instructions, no addresses to check."""
         assert dis(b"", address=0xBAAD) == []
+
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
+class TestCountAndStrict:
+    """Adversarial tests for count and strict parameters."""
+
+    @pytest.fixture(scope="class")
+    def dis(self):
+        return Disassembler.x86_64()
+
+    @pytest.fixture(scope="class")
+    def arm_dis(self):
+        return Disassembler.cortex_m7_dp()
+
+    # --- count ---
+
+    def test_count_zero_means_all(self, dis):
+        """count=0 decodes everything (default)."""
+        code = b"\x90\x90\x90\xc3"
+        assert len(dis(code, count=0)) == 4
+
+    def test_count_limits_instructions(self, dis):
+        """count=2 stops after 2 instructions."""
+        code = b"\x90\x90\x90\xc3"
+        result = dis(code, count=2)
+        assert len(result) == 2
+        assert result[-1].mnemonic == "nop"
+
+    def test_count_one(self, dis):
+        """count=1 returns exactly one instruction."""
+        code = b"\x90\xc3"
+        result = dis(code, count=1)
+        assert len(result) == 1
+
+    def test_count_exceeds_instructions(self, dis):
+        """count larger than available instructions returns all."""
+        code = b"\x90\xc3"
+        result = dis(code, count=100)
+        assert len(result) == 2
+
+    def test_count_with_address(self, dis):
+        """count and address combine correctly."""
+        code = b"\x90\x90\x90"
+        result = dis(code, address=0x1000, count=2)
+        assert len(result) == 2
+        assert result[0].address == 0x1000
+        assert result[1].address == 0x1001
+
+    def test_count_on_variable_length(self, dis):
+        """count works with variable-length instructions."""
+        # mov eax, 1 (5B) + nop (1B) + ret (1B)
+        code = b"\xb8\x01\x00\x00\x00\x90\xc3"
+        result = dis(code, count=1)
+        assert len(result) == 1
+        assert result[0].size == 5
+
+    def test_count_empty_input(self, dis):
+        """count with empty input returns empty."""
+        assert dis(b"", count=5) == []
+
+    # --- strict=False (skip bad bytes) ---
+
+    def test_nonstrict_skips_bad_byte_x86(self, dis):
+        """Non-strict skips bad bytes and continues decoding."""
+        # 0x06 is invalid in x86_64, but nop after it should decode
+        code = b"\x90\x06\x90"
+        result = dis(code, strict=False)
+        assert len(result) == 2
+        assert all(r.mnemonic == "nop" for r in result)
+
+    def test_nonstrict_preserves_addresses(self, dis):
+        """Addresses stay correct after skipping bad bytes."""
+        code = b"\x90\x06\xc3"  # nop, bad, ret
+        result = dis(code, address=0x1000, strict=False)
+        assert result[0].address == 0x1000
+        assert result[1].address == 0x1002  # skipped 0x1001
+
+    def test_nonstrict_all_bad_returns_empty(self, dis):
+        """All-bad input in non-strict mode returns empty list."""
+        result = dis(b"\x06\x06\x06", strict=False)
+        assert result == []
+
+    def test_nonstrict_trailing_bad_bytes(self, dis):
+        """Bad bytes at end don't affect decoded instructions."""
+        code = b"\x90\xc3\x06\x06"
+        result = dis(code, strict=False)
+        assert len(result) == 2
+
+    def test_nonstrict_bad_bytes_at_start(self, dis):
+        """Bad bytes at start are skipped, rest decodes."""
+        code = b"\x06\x06\x90"
+        result = dis(code, strict=False)
+        assert len(result) == 1
+        assert result[0].mnemonic == "nop"
+
+    def test_nonstrict_thumb_skips_by_two(self, arm_dis):
+        """Thumb non-strict skips 2 bytes (halfword-aligned)."""
+        # 0x00 0x00 is udf #0 in Thumb — valid but let's use known-bad bytes
+        # Build: valid nop + 2 bad bytes + valid nop
+        nop = bytes([0x00, 0xBF])
+        bad = bytes([0x99, 0x99])  # not a valid Thumb instruction
+        code = nop + bad + nop
+        result = arm_dis(code, address=0x0800_0000, strict=False)
+        # Should get at least the two nops; bad pair skipped as one unit
+        nop_results = [r for r in result if r.mnemonic == "nop"]
+        assert len(nop_results) == 2
+        assert nop_results[0].address == 0x0800_0000
+        assert nop_results[1].address == 0x0800_0004
+
+    def test_strict_raises(self, dis):
+        """Explicit strict=True raises on bad bytes."""
+        with pytest.raises(AsmError, match="Cannot disassemble"):
+            dis(b"\x06", strict=True)
+
+    # --- count + strict combined ---
+
+    def test_count_with_nonstrict(self, dis):
+        """count limits even when skipping bad bytes."""
+        code = b"\x90\x06\x90\xc3"
+        result = dis(code, count=1, strict=False)
+        assert len(result) == 1
+
+    def test_count_with_nonstrict_skips_then_limits(self, dis):
+        """Bad bytes don't count toward the limit."""
+        code = b"\x06\x90\x90\xc3"  # bad, nop, nop, ret
+        result = dis(code, count=2, strict=False)
+        assert len(result) == 2
+
+    # --- callable syntax ---
+
+    def test_callable_with_count(self, dis):
+        """__call__ forwards count."""
+        assert len(dis(b"\x90\x90\xc3", count=1)) == 1
+
+    def test_callable_with_strict(self, dis):
+        """__call__ forwards strict."""
+        result = dis(b"\x90\x06\xc3", strict=False)
+        assert len(result) == 2
 
 
 @pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")

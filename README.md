@@ -175,12 +175,28 @@ Assembler(triple, *, cpu="", features="", preamble=None, backend=None)
 Disassembler(triple, *, cpu="", features="", intel=True)
 ```
 
-- **`disasm(code, *, address=0)`** — disassemble to a list of `DisasmInstruction(offset, size, code, text)`
+- **`disasm(code, *, address=0, count=0, strict=False)`** — disassemble to a list of `DisasmInstruction`
+  - `address` — base address for PC-relative display
+  - `count` — max instructions to decode (0 = all)
+  - `strict` — if `True`, raise `AsmError` on undecodable bytes; if `False` (default), skip them
 - **`available()`** — static method, checks if libLLVM is present
 - **`close()`** — release resources for the calling thread
 - Callable: `dis(code)` is the same as `dis.disasm(code)`
 
 `disassemble` is an alias for `disasm`.
+
+#### DisasmInstruction
+
+| Field / Property | Type    | Description                                   |
+|------------------|---------|-----------------------------------------------|
+| `offset`         | `int`   | Byte offset from start of input               |
+| `size`           | `int`   | Instruction size in bytes                      |
+| `address`        | `int`   | Absolute address (`base + offset`)             |
+| `code`           | `bytes` | Raw instruction bytes                          |
+| `bytes`          | `bytes` | Alias for `code` (Capstone-compatible)         |
+| `text`           | `str`   | Full disassembly text from LLVM                |
+| `mnemonic`       | `str`   | Instruction mnemonic (e.g. `mov`)              |
+| `op_str`         | `str`   | Operand string (e.g. `eax, 1`), empty if none |
 
 Requires the C API backend (libLLVM). No subprocess fallback.
 
