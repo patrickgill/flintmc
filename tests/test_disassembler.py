@@ -33,7 +33,7 @@ class TestX86:
 
     def test_instruction_fields(self, dis):
         result = dis(b"\x90\xc3")
-        assert result[0] == DisasmInstruction(offset=0, size=1, code=b"\x90", text="nop")
+        assert result[0] == DisasmInstruction(offset=0, size=1, code=b"\x90", text="nop", address=0)
         assert result[1].offset == 1
         assert result[1].size == 1
         assert result[1].code == b"\xc3"
@@ -142,6 +142,156 @@ class TestCallSyntax:
         dis = Disassembler.x86_64()
         result = dis.disasm(b"\x90")
         assert len(result) == 1
+
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
+class TestCapstoneCompat:
+    """Adversarial tests for address, mnemonic, and op_str attributes."""
+
+    @pytest.fixture(scope="class")
+    def dis(self):
+        return Disassembler.x86_64()
+
+    @pytest.fixture(scope="class")
+    def arm_dis(self):
+        return Disassembler.cortex_m7_dp()
+
+    # --- address ---
+
+    def test_address_zero_base(self, dis):
+        """address defaults to offset when base is 0."""
+        result = dis(b"\x90\xc3", address=0)
+        assert result[0].address == 0
+        assert result[1].address == 1
+
+    def test_address_nonzero_base(self, dis):
+        """address = base + offset for each instruction."""
+        result = dis(b"\x90\xc3", address=0xDEAD_0000)
+        assert result[0].address == 0xDEAD_0000
+        assert result[1].address == 0xDEAD_0001
+
+    def test_address_large_base(self, dis):
+        """64-bit addresses don't truncate."""
+        base = 0xFFFF_FFFF_FFFF_0000
+        result = dis(b"\x90", address=base)
+        assert result[0].address == base
+
+    def test_address_multi_byte_offsets(self, dis):
+        """address tracks correctly through variable-length instructions."""
+        # mov eax, 1 (5 bytes) + nop (1 byte) + ret (1 byte)
+        code = b"\xb8\x01\x00\x00\x00\x90\xc3"
+        result = dis(code, address=0x1000)
+        assert result[0].address == 0x1000
+        assert result[1].address == 0x1005
+        assert result[2].address == 0x1006
+
+    def test_address_default_base(self, dis):
+        """Default base address is 0."""
+        result = dis(b"\x90")
+        assert result[0].address == 0
+
+    def test_address_thumb_mixed_sizes(self, arm_dis):
+        """Thumb: 2-byte and 4-byte instructions get correct addresses."""
+        # nop (2B) + nop (2B)
+        code = bytes([0x00, 0xBF, 0x00, 0xBF])
+        result = arm_dis(code, address=0x0800_0000)
+        assert result[0].address == 0x0800_0000
+        assert result[1].address == 0x0800_0002
+
+    def test_address_is_frozen(self, dis):
+        """address field is immutable (frozen dataclass)."""
+        result = dis(b"\x90")
+        with pytest.raises(AttributeError):
+            result[0].address = 0x9999
+
+    # --- mnemonic ---
+
+    def test_mnemonic_no_operands(self, dis):
+        """Instruction with no operands: mnemonic is the full text."""
+        result = dis(b"\x90")
+        assert result[0].mnemonic == "nop"
+
+    def test_mnemonic_with_operands(self, dis):
+        """Instruction with operands: mnemonic is first token only."""
+        code = b"\xb8\x01\x00\x00\x00"  # mov eax, 1
+        result = dis(code)
+        assert result[0].mnemonic == "mov"
+
+    def test_mnemonic_prefix_instruction(self, dis):
+        """rep-prefixed instruction mnemonic."""
+        code = b"\xf3\xa4"  # rep movsb
+        result = dis(code)
+        assert "rep" in result[0].mnemonic or "movs" in result[0].mnemonic
+
+    def test_mnemonic_arm(self, arm_dis):
+        """ARM mnemonic extraction works."""
+        code = bytes([0x70, 0x47])  # bx lr
+        result = arm_dis(code)
+        assert result[0].mnemonic == "bx"
+
+    # --- op_str ---
+
+    def test_op_str_no_operands(self, dis):
+        """No-operand instruction has empty op_str."""
+        result = dis(b"\x90")
+        assert result[0].op_str == ""
+
+    def test_op_str_single_operand(self, dis):
+        """Single operand instruction."""
+        code = b"\xff\xd0"  # call rax
+        result = dis(code)
+        assert result[0].op_str != ""
+        assert result[0].mnemonic == "call"
+
+    def test_op_str_multiple_operands(self, dis):
+        """Multi-operand: op_str contains comma-separated operands."""
+        code = b"\xb8\x01\x00\x00\x00"  # mov eax, 1
+        result = dis(code)
+        assert "," in result[0].op_str
+        assert "eax" in result[0].op_str
+
+    def test_op_str_memory_operand(self, dis):
+        """Memory operands with brackets preserved."""
+        code = b"\x8b\x00"  # mov eax, dword ptr [rax]
+        result = dis(code)
+        assert "[" in result[0].op_str
+
+    def test_op_str_arm_operands(self, arm_dis):
+        """ARM operand string extraction."""
+        code = bytes([0x70, 0x47])  # bx lr
+        result = arm_dis(code)
+        assert "lr" in result[0].op_str
+
+    # --- mnemonic + op_str reconstruct text ---
+
+    def test_mnemonic_op_str_cover_text(self, dis):
+        """mnemonic + op_str account for all content in text."""
+        code = b"\xb8\x01\x00\x00\x00\x90\xc3"
+        for insn in dis(code, address=0x1000):
+            # text may use tab between mnemonic and operands; normalize
+            assert insn.mnemonic in insn.text
+            if insn.op_str:
+                assert insn.op_str in insn.text
+
+    # --- equality with address ---
+
+    def test_equality_different_address(self, dis):
+        """Same bytes at different addresses are not equal."""
+        r1 = dis(b"\x90", address=0x1000)
+        r2 = dis(b"\x90", address=0x2000)
+        assert r1[0] != r2[0]
+
+    def test_equality_same_address(self, dis):
+        """Same bytes at same address are equal."""
+        r1 = dis(b"\x90", address=0x1000)
+        r2 = dis(b"\x90", address=0x1000)
+        assert r1[0] == r2[0]
+
+    # --- empty input ---
+
+    def test_empty_gives_no_addresses(self, dis):
+        """Empty input produces no instructions, no addresses to check."""
+        assert dis(b"", address=0xBAAD) == []
 
 
 @pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")

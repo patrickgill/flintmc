@@ -77,6 +77,18 @@ class DisasmInstruction:
     size: int
     code: bytes
     text: str
+    address: int = 0
+
+    @property
+    def mnemonic(self) -> str:
+        """Instruction mnemonic (e.g. 'mov', 'nop')."""
+        return self.text.split(None, 1)[0] if self.text else ""
+
+    @property
+    def op_str(self) -> str:
+        """Operand string (e.g. 'eax, 1'), empty if none."""
+        parts = self.text.split(None, 1)
+        return parts[1] if len(parts) > 1 else ""
 
 
 class Disassembler:
@@ -211,6 +223,7 @@ class Disassembler:
                 size=sz,
                 code=code[off:off + sz],
                 text=text,
+                address=address + off,
             ))
             off += sz
 
@@ -235,6 +248,9 @@ class Disassembler:
     def __call__(self, code: bytes, *, address: int = 0) -> list[DisasmInstruction]:
         """Shorthand for ``disasm(code)``."""
         return self.disasm(code, address=address)
+
+    # Alias: nyxstone-compatible name
+    disassemble = disasm
 
     def __repr__(self) -> str:
         parts = [self.triple]
