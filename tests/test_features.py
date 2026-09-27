@@ -39,6 +39,12 @@ class TestSplitSemicolons:
     def test_single_quotes(self):
         assert _split_semicolons("mov al, ';'") == "mov al, ';'"
 
+    def test_apostrophe_inside_double_quotes(self):
+        assert _split_semicolons('.ascii "it\'s; ok"') == '.ascii "it\'s; ok"'
+
+    def test_escaped_quote_inside_string(self):
+        assert _split_semicolons('.ascii "a\\"b; c"') == '.ascii "a\\"b; c"'
+
     def test_hash_immediate_digit(self):
         result = _split_semicolons("mov x0, #42; ret")
         assert "ret" in result
@@ -243,6 +249,16 @@ class TestExtractText:
 
 @pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
 class TestMachO:
+    @pytest.mark.parametrize("triple, source, expected", [
+        # Mach-O left these as unapplied relocations (e9 00000000 etc.)
+        ("x86_64-apple-macos", "jmp end; nop; end: ret", "eb0190c3"),
+        ("arm64-apple-macos", "b end; nop; end: ret", "020000141f2003d5c0035fd6"),
+        ("arm64-apple-macos", "cbz x0, e; e: ret", "200000b4c0035fd6"),
+        ("arm64-apple-macos", "adr x0, e; e: ret", "20000010c0035fd6"),
+    ])
+    def test_local_label_branches(self, triple, source, expected):
+        assert Assembler(triple).asm(source).hex() == expected
+
     def test_arm64_apple_triple(self):
         asm = Assembler(triple="arm64-apple-macos")
         code = asm("ret")
@@ -273,6 +289,11 @@ class TestCOFF:
     def test_windows_empty(self):
         asm = Assembler(triple="x86_64-pc-windows-msvc")
         assert asm("") == b""
+
+    def test_windows_symbol_branch(self):
+        # LLVM crashed emitting jmp-to-.set with COFF output; now assembled as ELF
+        asm = Assembler("x86_64-pc-windows-msvc", preamble="")
+        assert asm("jmp target", symbols={"target": 0x8000}) == bytes.fromhex("e9fb7f0000")
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +383,26 @@ class TestAsmEach:
     def test_empty(self):
         asm = Assembler.x86_64()
         assert asm.asm_each("") == []
+
+    @pytest.mark.parametrize("profile, source", [
+        (Assembler.x86_64, "jmp end; nop; end: ret"),         # relaxes to short jmp
+        (Assembler.cortex_m4, "b end; nop; end: bx lr"),
+        (Assembler.riscv64, "j end; nop; end: ret"),
+    ])
+    def test_forward_reference_matches_asm(self, profile, source):
+        asm = profile()
+        each = asm.asm_each(source)
+        assert len(each) == 3
+        assert b"".join(i.code for i in each) == asm(source)
+
+    def test_literal_pool_not_attributed_to_ldr(self):
+        each = Assembler.cortex_m4().asm_each("ldr r0, =0x12345678; bx lr")
+        assert [(i.offset, i.size, i.source) for i in each] == [
+            (0, 2, "ldr r0, =0x12345678"), (2, 2, "bx lr")]
+
+    def test_error_line_and_column(self):
+        with pytest.raises(AsmError, match=r"^line 3:1: "):
+            Assembler.x86_64().asm_each("nop\nnop\nbogus")
 
     def test_instruction_info_frozen(self):
         asm = Assembler.x86_64()
@@ -515,3 +556,26 @@ class TestVerify:
         asm = Assembler.riscv64()
         code = asm("addi x1, x0, 42", verify=True)
         assert len(code) == 4
+
+    @pytest.mark.parametrize("source", [
+        "top: nop; jmp top; call top; jne top; loop top",
+        "jmp e; nop; e: ret",
+    ])
+    def test_x86_relative_branches(self, source):
+        asm = Assembler.x86_64()
+        assert asm(source, verify=True) == asm(source)
+
+    def test_att_syntax(self):
+        asm = Assembler("x86_64", preamble="")
+        assert asm("top: movl $1, %eax; jmp top", verify=True) == bytes.fromhex("b801000000ebf9")
+
+    def test_default_verify(self, monkeypatch):
+        asm = Assembler.x86_64()
+        calls = []
+        monkeypatch.setattr(asm, "_verify_round_trip", calls.append)
+        asm("nop")
+        assert calls == []
+        monkeypatch.setattr(Assembler, "default_verify", True)
+        asm("ret")
+        asm("nop", verify=False)
+        assert calls == [b"\xc3"]

@@ -16,8 +16,9 @@ from typing import Any, Literal, Optional
 
 from .errors import AsmError, UnsupportedArchitectureError
 from .objfile import extract_text as _extract_text
-from .common import _fix_error, _split_semicolons, _default_preamble
+from .common import _fix_error, _split_semicolons, _default_preamble, _elf_triple
 from .llvm_capi import (
+    _arch_for_triple,
     is_available,
     try_create_backend,
 )
@@ -27,6 +28,10 @@ from .llvm_subprocess import (
 )
 
 BackendType = Literal["capi", "subprocess"]
+
+# x86 relative branches: LLVM prints the raw displacement ("jmp -3"),
+# which doesn't reassemble to the same bytes in either syntax.
+_X86_REL_BRANCH_RE = re.compile(r"^(?:j\w+|call\w?|loop\w*|xbegin\w?)\s+-?(?:0x)?[0-9a-f]+$")
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -78,6 +83,7 @@ class Assembler:
     """
 
     default_backend: Optional[BackendType] = None
+    default_verify: bool = False
     _resolved_default: Optional[BackendType] = None
 
     @staticmethod
@@ -134,6 +140,7 @@ class Assembler:
         backend: BackendType | None = None,
     ) -> None:
         self.triple = triple
+        self._obj_triple = _elf_triple(triple)
         self.cpu = cpu
         self.features = features
         self.preamble = preamble if preamble is not None else _default_preamble(triple)
@@ -155,22 +162,11 @@ class Assembler:
         # 1. Use explicit backend if passed to constructor
         # 2. Use global default (e.g. from pytest --backend)
         # 3. Auto-detect (C API preferred)
-        requested = backend or Assembler.default_backend
-
-        if requested == "capi":
-            if not self.capi_available():
-                raise RuntimeError("C API backend requested but libLLVM not found")
-            self.backend = "capi"
-        elif requested == "subprocess":
-            self.backend = "subprocess"
-        else:
-            # Auto-detect: Prefer C API
-            if self.capi_available():
-                self.backend = "capi"
-            elif self.subprocess_available():
-                self.backend = "subprocess"
-            else:
-                raise RuntimeError(f"No assembler backend found for {triple}")
+        if backend not in (None, "capi", "subprocess"):
+            raise ValueError(f"backend must be 'capi' or 'subprocess', got {backend!r}")
+        if backend == "capi" and not self.capi_available():
+            raise RuntimeError("C API backend requested but libLLVM not found")
+        self.backend = backend or self.resolve_backend()
 
         # Set the llvm-mc path (used for execution or diagnostics)
         self.llvm_mc = llvm_mc or find_llvm_mc() or ""
@@ -199,7 +195,7 @@ class Assembler:
         """Get or create the thread-local C API backend instance."""
         if not hasattr(self._local, "capi"):
             # Create a private backend instance for this thread
-            self._local.capi = try_create_backend(self.triple, self.cpu, self.features)
+            self._local.capi = try_create_backend(self._obj_triple, self.cpu, self.features)
             if not self._local.capi:
                 raise RuntimeError(f"Failed to create C API backend for {self.triple}")
         return self._local.capi
@@ -213,6 +209,8 @@ class Assembler:
         if hasattr(self._local, "capi") and self._local.capi:
             self._local.capi.close()
             del self._local.capi
+        if hasattr(self._local, "_verifier"):
+            self._local._verifier.close()
         self.cache_clear()
 
     def __enter__(self) -> "Assembler":
@@ -227,7 +225,7 @@ class Assembler:
             parts.append(self.cpu)
         return f"Assembler({', '.join(parts)}, backend={self.backend})"
 
-    def __call__(self, source: str, *, address: int | None = None, symbols: dict[str, int] | None = None, verify: bool = False) -> bytes:
+    def __call__(self, source: str, *, address: int | None = None, symbols: dict[str, int] | None = None, verify: bool | None = None) -> bytes:
         """Shorthand for ``asm(source)``."""
         return self.asm(source, address=address, symbols=symbols, verify=verify)
 
@@ -374,16 +372,16 @@ class Assembler:
 
     # -- Core assembly -----------------------------------------------------
 
-    def _run(self, source: str) -> bytes:
-        """Assemble source text, return raw .text bytes."""
+    def _run(self, source: str, header_lines: int) -> bytes:
+        """Assemble source text, return the raw object file bytes."""
         if self.backend == "capi":
-            return self._run_capi(source)
+            return self._run_capi(source, header_lines)
         if self.backend == "subprocess":
-            return self._run_subprocess(source)
+            return self._run_subprocess(source, header_lines)
 
         raise AsmError(f"Unknown backend: {self.backend}")
 
-    def _run_capi(self, source: str) -> bytes:
+    def _run_capi(self, source: str, header_lines: int) -> bytes:
         """Assemble via in-process LLVM C API
 
         Uses a private thread-local LLVMContext with a diagnostic handler to
@@ -396,14 +394,14 @@ class Assembler:
             backend = self._get_capi_backend()
             return backend.asm(source)
         except RuntimeError as exc:
-            raise AsmError(_fix_error(str(exc), self._preamble_lines))
+            raise AsmError(_fix_error(str(exc), header_lines))
 
-    def _run_subprocess(self, source: str) -> bytes:
+    def _run_subprocess(self, source: str, header_lines: int) -> bytes:
         if not hasattr(self._local, "subprocess"):
             self._local.subprocess = LlvmSubprocessBackend(
-                self.triple, self.cpu, self.features, self.llvm_mc
+                self._obj_triple, self.cpu, self.features, self.llvm_mc
             )
-        return self._local.subprocess.asm(source, self._preamble_lines)
+        return self._local.subprocess.asm(source, header_lines)
 
     _MAX_ADDRESS = 0x10_0000  # 1 MiB — keeps .org padding reasonable
     _SYMBOL_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_.$]*$")
@@ -423,7 +421,7 @@ class Assembler:
             lines.append(f".set {name}, {addr}")
         return "\n".join(lines)
 
-    def asm(self, source: str, *, address: int | None = None, symbols: dict[str, int] | None = None, verify: bool = False) -> bytes:
+    def asm(self, source: str, *, address: int | None = None, symbols: dict[str, int] | None = None, verify: bool | None = None) -> bytes:
         """Assemble one or more instructions.
 
         Thread-safe.  Results are cached (LRU, up to 4096 entries) —
@@ -469,6 +467,7 @@ class Assembler:
         verify:
             If True, disassemble the output and re-assemble it to check
             that the bytes round-trip.  Raises ``AsmError`` on mismatch.
+            Defaults to ``Assembler.default_verify`` (False).
             Requires the C API backend (``libLLVM``).  Intended for
             instructions only — data directives (``.byte``, ``.word``)
             and literal pools won't round-trip.
@@ -482,8 +481,18 @@ class Assembler:
         AsmError
             If assembly fails.
         """
+        if verify is None:
+            verify = self.default_verify
         if address is not None or symbols:
-            code = self._asm_at(source, address or 0, symbols)
+            address = address or 0
+            if address < 0:
+                raise ValueError("address must be non-negative")
+            if address > self._MAX_ADDRESS:
+                raise ValueError(
+                    f"address 0x{address:x} exceeds maximum 0x{self._MAX_ADDRESS:x}. "
+                    "Use .org directly for larger addresses."
+                )
+            code = self._assemble(source, address, symbols)
         else:
             with self._lock:
                 if source in self._cache:
@@ -512,15 +521,23 @@ class Assembler:
         if not hasattr(self._local, "_verifier"):
             self._local._verifier = Disassembler(
                 self.triple, cpu=self.cpu, features=self.features,
+                intel=".intel_syntax" in self.preamble,
             )
         dis = self._local._verifier
         try:
-            instrs = dis.disasm(code)
+            instrs = dis.disasm(code, strict=True)
         except AsmError:
             raise AsmError(
                 f"Verification failed: cannot disassemble output ({code.hex()})"
-            )
-        reassembled = self._assemble("\n".join(i.text for i in instrs))
+            ) from None
+        is_x86 = _arch_for_triple(self.triple) == "X86"
+        # ponytail: x86 relative branches are checked by decoding only, not re-encoding
+        lines = [
+            ".byte " + ", ".join(map(str, i.code))
+            if is_x86 and _X86_REL_BRANCH_RE.match(i.text) else i.text
+            for i in instrs
+        ]
+        reassembled = self._assemble("\n".join(lines))
         if reassembled != code:
             raise AsmError(
                 f"Verification failed: round-trip mismatch.\n"
@@ -528,43 +545,19 @@ class Assembler:
                 f"  reassembled: {reassembled.hex()}"
             )
 
-    def _assemble(self, source: str) -> bytes:
-        """Assemble source text without caching or address offset."""
-        text = _split_semicolons(source)
-
-        parts = []
-        if self.preamble:
-            parts.append(self.preamble)
-        parts.append(text)
-        full = "\n".join(parts) + "\n"
-
-        obj = self._run(full)
-        return _extract_text(obj)
-
-    def _asm_at(self, source: str, address: int, symbols: dict[str, int] | None = None) -> bytes:
-        """Assemble with optional base address and/or symbol injection."""
-        if address < 0:
-            raise ValueError("address must be non-negative")
-        if address > self._MAX_ADDRESS:
-            raise ValueError(
-                f"address 0x{address:x} exceeds maximum 0x{self._MAX_ADDRESS:x}. "
-                "Use .org directly for larger addresses."
-            )
-
-        text = _split_semicolons(source)
-        parts = []
-        if self.preamble:
-            parts.append(self.preamble)
+    def _assemble(self, source: str, address: int = 0, symbols: dict[str, int] | None = None) -> bytes:
+        """Assemble source text without caching or validation."""
+        parts = [self.preamble] if self.preamble else []
         if symbols:
             parts.append(self._symbol_directives(symbols))
         if address:
             parts.append(f".org {address}")
-        parts.append(text)
-        full = "\n".join(parts) + "\n"
+        # Lines injected before user source, for error line-number adjustment
+        header_lines = sum(p.count("\n") + 1 for p in parts)
+        parts.append(_split_semicolons(source))
 
-        obj = self._run(full)
-        code = _extract_text(obj)
-        return code[address:] if address else code
+        code = _extract_text(self._run("\n".join(parts) + "\n", header_lines))
+        return code[address:]
 
     def asm_each(self, source: str) -> list[InstructionInfo]:
         """Assemble and return per-instruction boundaries.
@@ -574,40 +567,45 @@ class Assembler:
         (labels, ``.equ``, etc.) are skipped.  Directives that emit
         data (``.byte``, ``.align``, ``.ltorg``) DO appear.
 
-        Uses cumulative assembly: assembles lines 1..N progressively
-        to determine where each instruction's bytes fall.  This
-        correctly handles labels and forward references.
+        Assembles once with a marker label on every line, so labels,
+        forward references and branch relaxation match ``asm()``.  An
+        implicit literal pool at the end of the code (ARM ``ldr r0, =X``
+        without ``.ltorg``) belongs to no line and is not included.
+        Section switches (``.data`` etc.) are not supported.
 
         Raises ``AsmError`` if any instruction fails to assemble.
         """
-        text = _split_semicolons(source)
-        lines = [l.strip() for l in text.splitlines()]
+        lines = [l.strip() for l in _split_semicolons(source).splitlines()]
         lines = [l for l in lines if l]
+        if not lines:
+            return []
 
-        preamble_parts = [self.preamble] if self.preamble else []
-        results: list[InstructionInfo] = []
-        prev_size = 0
-        accumulated: list[str] = []
+        n = len(lines)
+        # Marker on the same line keeps error line numbers intact.
+        text = [f".Lflintmc_{i}: {line}" for i, line in enumerate(lines)]
+        text.append(f".Lflintmc_{n}:")
+        if _arch_for_triple(self.triple) in ("ARM", "AArch64"):
+            text.append(".ltorg")  # flush literal pool before the trailer
+        # Trailer: each marker's offset as 4 little-endian bytes.  Label
+        # differences are assembly-time constants in every object format.
+        for i in range(n + 1):
+            d = f"(.Lflintmc_{i} - .Lflintmc_0)"
+            text.append(f".byte {d} & 0xff, ({d} >> 8) & 0xff, ({d} >> 16) & 0xff, ({d} >> 24) & 0xff")
 
-        for line in lines:
-            accumulated.append(line)
-            full = "\n".join(preamble_parts + accumulated) + "\n"
-            elf = self._run(full)
-            code = _extract_text(elf)
-            cur_size = len(code)
-
-            if cur_size > prev_size:
-                instr_bytes = code[prev_size:]
-                results.append(InstructionInfo(
-                    offset=prev_size,
-                    size=cur_size - prev_size,
-                    code=instr_bytes,
-                    source=line,
-                ))
-                prev_size = cur_size
-            # else: label, directive, or alignment — no new bytes
-
-        return results
+        try:
+            code = self._assemble("\n".join(text))
+        except AsmError:
+            # Re-raise from the unmarked source so columns/echo are clean
+            self._assemble("\n".join(lines))
+            raise
+        trailer = code[-4 * (n + 1):]
+        offs = [int.from_bytes(trailer[4 * i:4 * i + 4], "little") for i in range(n + 1)]
+        return [
+            InstructionInfo(offset=offs[i], size=offs[i + 1] - offs[i],
+                            code=code[offs[i]:offs[i + 1]], source=line)
+            for i, line in enumerate(lines)
+            if offs[i + 1] > offs[i]
+        ]
 
     @property
     def cache_size(self) -> int:
