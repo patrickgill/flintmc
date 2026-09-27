@@ -10,7 +10,7 @@ flintmc/
 ├── assembler.py         # Assembler class, profiles, caching, asm_each, verify
 ├── disassembler.py      # Disassembler class, LLVMDisasmInstruction bindings
 ├── errors.py            # AsmError, UnsupportedArchitectureError
-├── objfile.py           # ELF/Mach-O/COFF .text extraction + relocation patching
+├── objfile.py           # .text extraction (ELF; Mach-O/COFF fallback) + relocation patching
 ├── common.py            # Source preprocessing, error fixup, preamble defaults
 ├── llvm_capi.py         # LLVM C API backend (ctypes bindings, discovery, TLS)
 ├── llvm_subprocess.py   # llvm-mc subprocess backend + discovery
@@ -73,7 +73,7 @@ When `strict=False` (the default), undecodable bytes are skipped by advancing th
 
 ## Object File Parsing
 
-`flintmc` supports three object file formats, all parsed in pure Python:
+Apple (Mach-O) and Windows (COFF) triples are rewritten to `<arch>-unknown-none-elf` before assembly (`common._elf_triple`). Mach-O leaves branches to local labels as unapplied relocations, and LLVM crashes on COFF branches to `.set` symbols; the machine code is otherwise identical. The Mach-O and COFF parsers remain as a fallback for triples the rewrite doesn't recognize:
 
 | Format | Detection | .text section name |
 | :--- | :--- | :--- |

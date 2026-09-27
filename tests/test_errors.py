@@ -125,3 +125,15 @@ def test_asm_failure_with_diagnostics():
         
         assert "Directly injected diagnostic error" in str(excinfo.value)
         assert "assembly failed" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("kw", [{}, {"symbols": {"x": 1, "y": 2}}, {"address": 0x10}])
+def test_error_line_number_ignores_injected_lines(kw):
+    """symbols= and address= inject directives; error lines must still match user source."""
+    with pytest.raises(AsmError, match=r"^line 2:"):
+        Assembler.x86_64().asm("nop\nbogus", **kw)
+
+
+def test_invalid_backend_name():
+    with pytest.raises(ValueError, match="backend must be"):
+        Assembler("x86_64", backend="bogus")

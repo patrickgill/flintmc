@@ -13,7 +13,7 @@
 | **Per-instruction info** | Yes (`asm_each()`) | Yes | Count only |
 | **Round-trip verify** | Yes (`verify=True`) | No | No |
 | **Concurrency** | True parallel (TLS) | Global lock | Global lock |
-| **Object formats** | ELF + Mach-O + COFF | N/A (no object files) | N/A (raw output) |
+| **Object formats** | Any triple (assembled as ELF internally) | N/A (no object files) | N/A (raw output) |
 | **Context manager** | Yes | No | No |
 
 ---
@@ -59,12 +59,12 @@ Thousands of community plugins, debugger integrations (OllyDbg, x64dbg), and ext
 4.  **Round-trip verification**: `verify=True` catches encoding mismatches that neither Nyxstone nor Keystone detect.
 5.  **Disassembly + assembly in one package**: No need for a separate Capstone install.
 6.  **Subprocess fallback**: Works even without `libLLVM` (slower, but functional).
-7.  **Three object format parsers**: ELF, Mach-O, COFF — covers Linux, macOS, and Windows targets.
+7.  **Any OS triple**: Apple and Windows triples are assembled as ELF internally (same machine code), so local-label branches and relocations behave identically everywhere.
 
 ---
 
 ## Known limitations
 
-- **COFF branch relocations**: LLVM segfaults when emitting `jmp`/`call` to `.set` symbols with COFF output. This is an upstream LLVM bug. Data references (mov, lea) work fine on COFF.
+- **x86 Intel-syntax symbol branches**: LLVM's Intel parser rejects `jmp`/`call` to an absolute `.set` symbol (`invalid operand`). Use AT&T syntax (`preamble=""`) for symbol branches on x86.
 - **Base address limit**: `.org` approach caps at 1 MiB. Use `.org` directly in the source for larger addresses, or compute section-relative offsets in the `symbols` dict.
 - **WebAssembly**: LLVM emits wasm binary format, not ELF/Mach-O/COFF. Not supported.

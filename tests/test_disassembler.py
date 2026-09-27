@@ -99,6 +99,14 @@ class TestAArch64:
         result = dis(code)
         assert result[0].size == 4
 
+    @pytest.mark.parametrize("triple", ["aarch64", "arm64-apple-macos"])
+    def test_skip_invalid_stays_aligned(self, triple):
+        # arm64 contains "arm" — must still skip 4 bytes, not 2
+        dis = Disassembler(triple)
+        result = dis(b"\xff\xff\xff\xff" + bytes([0x1f, 0x20, 0x03, 0xd5]))
+        assert [(i.offset, i.text) for i in result] == [(4, "nop")]
+        assert dis._min_insn_size == 4
+
 
 @pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
 class TestARM:
