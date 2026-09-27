@@ -8,6 +8,7 @@ by the assembler.
 import ctypes
 import dataclasses
 import threading
+import weakref
 from typing import Any
 
 from .errors import AsmError, UnsupportedArchitectureError
@@ -28,14 +29,17 @@ _OPT_ASM_PRINTER_VARIANT = 4  # Intel syntax for x86
 _OPT_SET_INSTR_COMMENTS = 8
 _OPT_PRINT_LATENCY = 16
 
-# Tracks which architectures have had their Disassembler initialized
-_initialized_disasm: set[str] = set()
-
-
 def _init_disasm(lib: ctypes.CDLL, arch: str) -> None:
-    """Initialize the disassembler for an architecture."""
+    """Initialize the disassembler for an architecture.
+
+    State lives on the CDLL object so ``set_libllvm_path()`` (a new CDLL)
+    gets its own argtypes and init — stale argtypes truncate pointers.
+    """
     with _init_lock:
-        if arch in _initialized_disasm:
+        initialized = lib.__dict__.setdefault("_flintmc_disasm_arches", set())
+        if not initialized:
+            _declare_disasm_argtypes(lib)
+        if arch in initialized:
             return
         name = f"LLVMInitialize{arch}Disassembler"
         fn = getattr(lib, name, None)
@@ -47,7 +51,7 @@ def _init_disasm(lib: ctypes.CDLL, arch: str) -> None:
         fn.restype = None
         fn.argtypes = []
         fn()
-        _initialized_disasm.add(arch)
+        initialized.add(arch)
 
 
 def _declare_disasm_argtypes(lib: ctypes.CDLL) -> None:
@@ -65,9 +69,6 @@ def _declare_disasm_argtypes(lib: ctypes.CDLL) -> None:
     lib.LLVMSetDisasmOptions.argtypes = [VP, ctypes.c_uint64]
     lib.LLVMDisasmDispose.restype = None
     lib.LLVMDisasmDispose.argtypes = [VP]
-
-
-_disasm_argtypes_declared = False
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -130,18 +131,12 @@ class Disassembler:
         features: str = "",
         intel: bool = True,
     ) -> None:
-        global _disasm_argtypes_declared
-
         lib = _load_llvm()
         if lib is None:
             raise RuntimeError(
                 "Disassembler requires libLLVM (C API). "
                 "The subprocess backend does not support disassembly."
             )
-
-        if not _disasm_argtypes_declared:
-            _declare_disasm_argtypes(lib)
-            _disasm_argtypes_declared = True
 
         arch = _arch_for_triple(triple)
         if arch is None:
@@ -162,10 +157,10 @@ class Disassembler:
 
         # Minimum instruction size for skip-on-error alignment
         t = triple.lower()
-        if "thumb" in t or "arm" in t:
-            self._min_insn_size = 2
-        elif "aarch64" in t:
+        if t.startswith(("aarch64", "arm64")):
             self._min_insn_size = 4
+        elif t.startswith(("thumb", "arm", "riscv")):
+            self._min_insn_size = 2
         else:
             self._min_insn_size = 1
 
@@ -189,6 +184,8 @@ class Disassembler:
                 opts |= _OPT_ASM_PRINTER_VARIANT
             self._lib.LLVMSetDisasmOptions(ctx, opts)
             self._local.ctx = ctx
+            # Dispose when this Disassembler is collected, if close() never runs
+            self._local.finalizer = weakref.finalize(self, self._lib.LLVMDisasmDispose, ctx)
         return self._local.ctx
 
     def disasm(
@@ -266,9 +263,9 @@ class Disassembler:
         Safe to call multiple times.  After ``close()``, the disassembler
         can still be used — a fresh context is created on the next call.
         """
-        if hasattr(self._local, "ctx") and self._local.ctx:
-            self._lib.LLVMDisasmDispose(self._local.ctx)
-            del self._local.ctx
+        if hasattr(self._local, "ctx"):
+            self._local.finalizer()
+            del self._local.ctx, self._local.finalizer
 
     def __enter__(self) -> "Disassembler":
         return self
