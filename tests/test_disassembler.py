@@ -474,3 +474,28 @@ class TestConcurrency:
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
             futures = [ex.submit(worker) for _ in range(4)]
             assert all(f.result() for f in futures)
+
+
+PROFILE_SAMPLES = {
+    "armv6m": "nop", "armv7m": "nop", "armv8m": "nop", "cortex_m0": "nop",
+    "cortex_m4": "vadd.f32 s0, s1, s2", "cortex_m7_sp": "vadd.f32 s0, s1, s2",
+    "cortex_m7_dp": "vadd.f64 d0, d1, d2", "cortex_m33": "vadd.f32 s0, s1, s2",
+    "x86_64": "ret", "x86_32": "ret", "aarch64": "ret", "riscv64": "ret", "riscv32": "ret",
+    "loongarch64": "ret", "avr": "ret", "bpf": "exit", "msp430": "ret",
+}
+
+
+@pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
+@pytest.mark.parametrize("name", sorted(PROFILE_SAMPLES))
+def test_profile_parity_and_round_trip(name):
+    """Every Assembler profile has a Disassembler twin with identical settings."""
+    from flintmc.common import _PROFILES
+    assert set(PROFILE_SAMPLES) == set(_PROFILES)
+    asm, dis = getattr(Assembler, name)(), getattr(Disassembler, name)()
+    assert (asm.triple, asm.cpu, asm.features) == (dis.triple, dis.cpu, dis.features)
+    code = asm(PROFILE_SAMPLES[name])
+    assert [i.code for i in dis(code, strict=True)] == [code]
+
+
+def test_profile_kwargs_override():
+    assert Assembler.cortex_m4(features="+vfp4").features == "+vfp4"

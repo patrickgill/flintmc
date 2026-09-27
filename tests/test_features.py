@@ -400,6 +400,19 @@ class TestAsmEach:
         assert [(i.offset, i.size, i.source) for i in each] == [
             (0, 2, "ldr r0, =0x12345678"), (2, 2, "bx lr")]
 
+    @pytest.mark.parametrize("kw", [{"address": 0x100}, {"symbols": {"t": 0x8000}},
+                                    {"symbols": {"t": 0x8000}, "address": 0x1000}])
+    def test_address_and_symbols_match_asm(self, kw):
+        asm = Assembler("x86_64", preamble="")  # AT&T: symbol branches
+        source = "nop; jmp t; call t" if "symbols" in kw else "nop; lea 1f(%rip), %rax; 1: ret"
+        each = asm.asm_each(source, **kw)
+        assert b"".join(i.code for i in each) == asm(source, **kw)
+        assert each[0].offset == 0
+
+    def test_address_validated(self):
+        with pytest.raises(ValueError):
+            Assembler.x86_64().asm_each("nop", address=-1)
+
     def test_error_line_and_column(self):
         with pytest.raises(AsmError, match=r"^line 3:1: "):
             Assembler.x86_64().asm_each("nop\nnop\nbogus")

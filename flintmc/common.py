@@ -43,6 +43,32 @@ def _split_semicolons(source: str) -> str:
         out.append(line[start:])
     return "\n".join(out)
 
+# Preset profiles shared by Assembler and Disassembler: name -> (triple, cpu, features)
+_PROFILES: dict[str, tuple[str, str, str]] = {
+    "armv6m": ("armv6m-none-eabi", "", ""),
+    "armv7m": ("armv7m-none-eabi", "", ""),
+    "armv8m": ("armv8m.main-none-eabi", "", ""),
+    "cortex_m0": ("thumbv6m-none-eabi", "cortex-m0", ""),
+    "cortex_m4": ("thumbv7em-none-eabi", "cortex-m4", "+vfp4,-fp64,-fpregs64"),
+    "cortex_m7_sp": ("thumbv7em-none-eabi", "cortex-m7", "+fp-armv8d16sp,-fp64,-fpregs64"),
+    "cortex_m7_dp": ("thumbv7em-none-eabi", "cortex-m7", "+fp-armv8,+fp64"),
+    "cortex_m33": ("thumbv8m.main-none-eabi", "cortex-m33", "+fp-armv8d16sp,+dsp,-fp64,-fpregs64"),
+    "x86_64": ("x86_64", "", ""),
+    "x86_32": ("i686", "", ""),
+    "aarch64": ("aarch64", "", ""),
+    "riscv64": ("riscv64", "generic-rv64", "+m,+a,+f,+d"),
+    "riscv32": ("riscv32", "generic-rv32", "+m,+a,+f"),
+    "loongarch64": ("loongarch64", "", ""),
+    "avr": ("avr", "avr5", ""),
+    "bpf": ("bpf", "", ""),
+    "msp430": ("msp430", "", ""),
+}
+
+def _preset(cls, name, kw):
+    """Construct *cls* from a named profile; ``cpu``/``features`` in *kw* override it."""
+    triple, cpu, features = _PROFILES[name]
+    return cls(triple, **{"cpu": cpu, "features": features, **kw})
+
 # Triple components that select a non-ELF object format (Mach-O / COFF).
 _NON_ELF = ("apple", "darwin", "macos", "ios", "tvos", "watchos", "macho",
             "windows", "win32", "msvc", "mingw", "cygwin", "coff")

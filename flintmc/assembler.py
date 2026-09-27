@@ -16,7 +16,7 @@ from typing import Any, Literal, Optional
 
 from .errors import AsmError, UnsupportedArchitectureError
 from .objfile import extract_text as _extract_text
-from .common import _fix_error, _split_semicolons, _default_preamble, _elf_triple
+from .common import _fix_error, _split_semicolons, _default_preamble, _elf_triple, _preset
 from .llvm_capi import (
     _arch_for_triple,
     is_available,
@@ -234,17 +234,17 @@ class Assembler:
     @classmethod
     def armv6m(cls, **kw: Any) -> "Assembler":
         """ARMv6-M (Cortex-M0/M0+). Thumb-1 only, no FPU."""
-        return cls("armv6m-none-eabi", cpu="", features="", **kw)
+        return _preset(cls, "armv6m", kw)
 
     @classmethod
     def armv7m(cls, **kw: Any) -> "Assembler":
         """ARMv7-M (Cortex-M3/M4/M7). Thumb-2, no FPU by default."""
-        return cls("armv7m-none-eabi", cpu="", features="", **kw)
+        return _preset(cls, "armv7m", kw)
 
     @classmethod
     def armv8m(cls, **kw: Any) -> "Assembler":
         """ARMv8-M Mainline (Cortex-M33/M55). Thumb-2 + TrustZone."""
-        return cls("armv8m.main-none-eabi", cpu="", features="", **kw)
+        return _preset(cls, "armv8m", kw)
 
     # -- ARM Cortex-M profiles (with specific CPU/FPU) ---------------------
 
@@ -255,12 +255,7 @@ class Assembler:
         Rejects .f64 instructions at assembly time.  Equivalent to
         ``arm-none-eabi-as -mcpu=cortex-m7 -mfpu=fpv5-sp-d16``.
         """
-        return cls(
-            "thumbv7em-none-eabi",
-            cpu="cortex-m7",
-            features="+fp-armv8d16sp,-fp64,-fpregs64",
-            **kw,
-        )
+        return _preset(cls, "cortex_m7_sp", kw)
 
     @classmethod
     def cortex_m7_dp(cls, **kw: Any) -> "Assembler":
@@ -268,12 +263,7 @@ class Assembler:
 
         Equivalent to ``arm-none-eabi-as -mcpu=cortex-m7 -mfpu=fpv5-d16``.
         """
-        return cls(
-            "thumbv7em-none-eabi",
-            cpu="cortex-m7",
-            features="+fp-armv8,+fp64",
-            **kw,
-        )
+        return _preset(cls, "cortex_m7_dp", kw)
 
     @classmethod
     def cortex_m4(cls, **kw: Any) -> "Assembler":
@@ -281,12 +271,7 @@ class Assembler:
 
         Equivalent to ``arm-none-eabi-as -mcpu=cortex-m4 -mfpu=fpv4-sp-d16``.
         """
-        return cls(
-            "thumbv7em-none-eabi",
-            cpu="cortex-m4",
-            features="+vfp4,-fp64,-fpregs64",
-            **kw,
-        )
+        return _preset(cls, "cortex_m4", kw)
 
     @classmethod
     def cortex_m33(cls, **kw: Any) -> "Assembler":
@@ -294,12 +279,7 @@ class Assembler:
 
         Equivalent to ``arm-none-eabi-as -mcpu=cortex-m33 -mfpu=fpv5-sp-d16``.
         """
-        return cls(
-            "thumbv8m.main-none-eabi",
-            cpu="cortex-m33",
-            features="+fp-armv8d16sp,+dsp,-fp64,-fpregs64",
-            **kw,
-        )
+        return _preset(cls, "cortex_m33", kw)
 
     @classmethod
     def cortex_m0(cls, **kw: Any) -> "Assembler":
@@ -307,24 +287,19 @@ class Assembler:
 
         Equivalent to ``arm-none-eabi-as -mcpu=cortex-m0``.
         """
-        return cls(
-            "thumbv6m-none-eabi",
-            cpu="cortex-m0",
-            features="",
-            **kw,
-        )
+        return _preset(cls, "cortex_m0", kw)
 
     # -- x86 profiles ------------------------------------------------------
 
     @classmethod
     def x86_64(cls, **kw: Any) -> "Assembler":
         """x86-64 with Intel syntax."""
-        return cls("x86_64", cpu="", features="", **kw)
+        return _preset(cls, "x86_64", kw)
 
     @classmethod
     def x86_32(cls, **kw: Any) -> "Assembler":
         """x86 32-bit with Intel syntax."""
-        return cls("i686", cpu="", features="", **kw)
+        return _preset(cls, "x86_32", kw)
 
     # Alias
     i686 = x86_32
@@ -334,41 +309,41 @@ class Assembler:
     @classmethod
     def aarch64(cls, **kw: Any) -> "Assembler":
         """AArch64 (ARMv8-A 64-bit)."""
-        return cls("aarch64", cpu="", features="", **kw)
+        return _preset(cls, "aarch64", kw)
 
     @classmethod
     def loongarch64(cls, **kw: Any) -> "Assembler":
         """LoongArch 64-bit."""
-        return cls("loongarch64", **kw)
+        return _preset(cls, "loongarch64", kw)
 
     # -- RISC-V profiles ---------------------------------------------------
 
     @classmethod
     def riscv64(cls, **kw: Any) -> "Assembler":
         """RISC-V 64-bit with common extensions (mafd)."""
-        return cls("riscv64", cpu="generic-rv64", features="+m,+a,+f,+d", **kw)
+        return _preset(cls, "riscv64", kw)
 
     @classmethod
     def riscv32(cls, **kw: Any) -> "Assembler":
         """RISC-V 32-bit with common extensions (maf)."""
-        return cls("riscv32", cpu="generic-rv32", features="+m,+a,+f", **kw)
+        return _preset(cls, "riscv32", kw)
 
     # -- Other popular architectures ---------------------------------------
 
     @classmethod
     def avr(cls, **kw: Any) -> "Assembler":
         """Atmel AVR (8-bit microcontroller)."""
-        return cls("avr", cpu="avr5", **kw)
+        return _preset(cls, "avr", kw)
 
     @classmethod
     def bpf(cls, **kw: Any) -> "Assembler":
         """BPF (Berkeley Packet Filter) / eBPF."""
-        return cls("bpf", **kw)
+        return _preset(cls, "bpf", kw)
 
     @classmethod
     def msp430(cls, **kw: Any) -> "Assembler":
         """TI MSP430 (ultra-low-power 16-bit MCU)."""
-        return cls("msp430", **kw)
+        return _preset(cls, "msp430", kw)
 
     # -- Core assembly -----------------------------------------------------
 
@@ -405,6 +380,18 @@ class Assembler:
 
     _MAX_ADDRESS = 0x10_0000  # 1 MiB — keeps .org padding reasonable
     _SYMBOL_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_.$]*$")
+
+    @classmethod
+    def _check_address(cls, address: int | None) -> int:
+        address = address or 0
+        if address < 0:
+            raise ValueError("address must be non-negative")
+        if address > cls._MAX_ADDRESS:
+            raise ValueError(
+                f"address 0x{address:x} exceeds maximum 0x{cls._MAX_ADDRESS:x}. "
+                "Use .org directly for larger addresses."
+            )
+        return address
 
     @staticmethod
     def _symbol_directives(symbols: dict[str, int]) -> str:
@@ -484,15 +471,7 @@ class Assembler:
         if verify is None:
             verify = self.default_verify
         if address is not None or symbols:
-            address = address or 0
-            if address < 0:
-                raise ValueError("address must be non-negative")
-            if address > self._MAX_ADDRESS:
-                raise ValueError(
-                    f"address 0x{address:x} exceeds maximum 0x{self._MAX_ADDRESS:x}. "
-                    "Use .org directly for larger addresses."
-                )
-            code = self._assemble(source, address, symbols)
+            code = self._assemble(source, self._check_address(address), symbols)
         else:
             with self._lock:
                 if source in self._cache:
@@ -559,7 +538,7 @@ class Assembler:
         code = _extract_text(self._run("\n".join(parts) + "\n", header_lines))
         return code[address:]
 
-    def asm_each(self, source: str) -> list[InstructionInfo]:
+    def asm_each(self, source: str, *, address: int | None = None, symbols: dict[str, int] | None = None) -> list[InstructionInfo]:
         """Assemble and return per-instruction boundaries.
 
         Each entry has ``.offset``, ``.size``, ``.code`` (bytes), and
@@ -573,8 +552,12 @@ class Assembler:
         without ``.ltorg``) belongs to no line and is not included.
         Section switches (``.data`` etc.) are not supported.
 
+        ``address`` and ``symbols`` work as in ``asm()``.  Offsets stay
+        relative to the start of the block, not to ``address``.
+
         Raises ``AsmError`` if any instruction fails to assemble.
         """
+        address = self._check_address(address)
         lines = [l.strip() for l in _split_semicolons(source).splitlines()]
         lines = [l for l in lines if l]
         if not lines:
@@ -593,10 +576,10 @@ class Assembler:
             text.append(f".byte {d} & 0xff, ({d} >> 8) & 0xff, ({d} >> 16) & 0xff, ({d} >> 24) & 0xff")
 
         try:
-            code = self._assemble("\n".join(text))
+            code = self._assemble("\n".join(text), address, symbols)
         except AsmError:
             # Re-raise from the unmarked source so columns/echo are clean
-            self._assemble("\n".join(lines))
+            self._assemble("\n".join(lines), address, symbols)
             raise
         trailer = code[-4 * (n + 1):]
         offs = [int.from_bytes(trailer[4 * i:4 * i + 4], "little") for i in range(n + 1)]

@@ -12,6 +12,7 @@ import weakref
 from typing import Any
 
 from .errors import AsmError, UnsupportedArchitectureError
+from .common import _preset
 from .llvm_capi import (
     _load_llvm,
     _init_target,
@@ -293,28 +294,91 @@ class Disassembler:
             parts.append(self.cpu)
         return f"Disassembler({', '.join(parts)})"
 
-    # -- Profiles ----------------------------------------------------------
+    # -- Profiles (same names and settings as Assembler) ------------------
 
     @classmethod
-    def x86_64(cls, **kw: Any) -> "Disassembler":
-        return cls("x86_64", **kw)
+    def armv6m(cls, **kw: Any) -> "Disassembler":
+        """ARMv6-M (Cortex-M0/M0+)."""
+        return _preset(cls, "armv6m", kw)
 
     @classmethod
-    def x86_32(cls, **kw: Any) -> "Disassembler":
-        return cls("i686", **kw)
+    def armv7m(cls, **kw: Any) -> "Disassembler":
+        """ARMv7-M, no FPU."""
+        return _preset(cls, "armv7m", kw)
 
     @classmethod
-    def aarch64(cls, **kw: Any) -> "Disassembler":
-        return cls("aarch64", **kw)
+    def armv8m(cls, **kw: Any) -> "Disassembler":
+        """ARMv8-M Mainline, no FPU."""
+        return _preset(cls, "armv8m", kw)
+
+    @classmethod
+    def cortex_m0(cls, **kw: Any) -> "Disassembler":
+        """Cortex-M0/M0+."""
+        return _preset(cls, "cortex_m0", kw)
+
+    @classmethod
+    def cortex_m4(cls, **kw: Any) -> "Disassembler":
+        """Cortex-M4 with FPv4-SP."""
+        return _preset(cls, "cortex_m4", kw)
+
+    @classmethod
+    def cortex_m7_sp(cls, **kw: Any) -> "Disassembler":
+        """Cortex-M7 with FPv5-SP-D16."""
+        return _preset(cls, "cortex_m7_sp", kw)
 
     @classmethod
     def cortex_m7_dp(cls, **kw: Any) -> "Disassembler":
-        return cls("thumbv7em-none-eabi", cpu="cortex-m7", features="+fp-armv8,+fp64", **kw)
+        """Cortex-M7 with FPv5-D16."""
+        return _preset(cls, "cortex_m7_dp", kw)
+
+    @classmethod
+    def cortex_m33(cls, **kw: Any) -> "Disassembler":
+        """Cortex-M33 with FPv5-SP + DSP."""
+        return _preset(cls, "cortex_m33", kw)
+
+    @classmethod
+    def x86_64(cls, **kw: Any) -> "Disassembler":
+        """x86-64 (Intel syntax by default)."""
+        return _preset(cls, "x86_64", kw)
+
+    @classmethod
+    def x86_32(cls, **kw: Any) -> "Disassembler":
+        """x86 32-bit (Intel syntax by default)."""
+        return _preset(cls, "x86_32", kw)
+
+    i686 = x86_32
+
+    @classmethod
+    def aarch64(cls, **kw: Any) -> "Disassembler":
+        """AArch64."""
+        return _preset(cls, "aarch64", kw)
 
     @classmethod
     def riscv64(cls, **kw: Any) -> "Disassembler":
-        return cls("riscv64", cpu="generic-rv64", features="+m,+a,+f,+d", **kw)
+        """RISC-V 64-bit (mafd)."""
+        return _preset(cls, "riscv64", kw)
 
     @classmethod
     def riscv32(cls, **kw: Any) -> "Disassembler":
-        return cls("riscv32", cpu="generic-rv32", features="+m,+a,+f", **kw)
+        """RISC-V 32-bit (maf)."""
+        return _preset(cls, "riscv32", kw)
+
+    @classmethod
+    def loongarch64(cls, **kw: Any) -> "Disassembler":
+        """LoongArch 64-bit."""
+        return _preset(cls, "loongarch64", kw)
+
+    @classmethod
+    def avr(cls, **kw: Any) -> "Disassembler":
+        """Atmel AVR (avr5)."""
+        return _preset(cls, "avr", kw)
+
+    @classmethod
+    def bpf(cls, **kw: Any) -> "Disassembler":
+        """BPF / eBPF."""
+        return _preset(cls, "bpf", kw)
+
+    @classmethod
+    def msp430(cls, **kw: Any) -> "Disassembler":
+        """TI MSP430."""
+        return _preset(cls, "msp430", kw)
