@@ -41,7 +41,7 @@ def _elf_endian(elf: bytes) -> str:
 def extract_text(obj: bytes) -> bytes:
     """Extract the code section from an ELF, Mach-O, or COFF object.
 
-    For ELF64, applies .rela.text relocations (R_X86_64_PC32 etc.)
+    For ELF, applies x86 PC-relative relocations (R_X86_64_PC32, R_386_PC32)
     so that branch instructions to .set symbols resolve correctly.
     """
     if len(obj) < 4:
@@ -52,8 +52,7 @@ def extract_text(obj: bytes) -> bytes:
             raise AsmError("truncated ELF output")
         endian = _elf_endian(obj)
         ei_class = obj[4]
-        if ei_class == 1: return _extract_text_elf32(obj, endian)
-        if ei_class == 2: return _extract_text_elf64(obj, endian)
+        if ei_class in (1, 2): return _extract_text_elf(obj, endian, ei_class == 2)
         raise AsmError(f"unsupported ELF class: {ei_class}")
     if magic == _MACHO_MAGIC_64:
         return _extract_text_macho64(obj)
@@ -69,78 +68,34 @@ def extract_text(obj: bytes) -> bytes:
 
 # -- ELF ------------------------------------------------------------------
 
-_ELF32_SHDR = struct.Struct("<IIIIIIIIII")
-_ELF64_SHDR = struct.Struct("<IIQQQQIIQQ")
-# Indices into unpacked section header:
-#   0=name 1=type 2=flags 3=addr 4=offset 5=size 6=link 7=info 8=addralign 9=entsize
-
-
-def _extract_text_elf32(elf: bytes, e: str) -> bytes:
-    e_shoff = struct.unpack_from(f"{e}I", elf, 0x20)[0]
-    e_shentsize = struct.unpack_from(f"{e}H", elf, 0x2E)[0]
-    e_shnum = struct.unpack_from(f"{e}H", elf, 0x30)[0]
-    e_shstrndx = struct.unpack_from(f"{e}H", elf, 0x32)[0]
-    shdr_struct = struct.Struct(f"{e}IIIIIIIIII")
-
-    strtab_shdr = shdr_struct.unpack_from(elf, e_shoff + e_shstrndx * e_shentsize)
+def _extract_text_elf(elf: bytes, e: str, is64: bool) -> bytes:
+    if is64:
+        e_shoff = struct.unpack_from(f"{e}Q", elf, 0x28)[0]
+        e_shentsize, e_shnum, e_shstrndx = struct.unpack_from(f"{e}HHH", elf, 0x3A)
+        shdr_struct = struct.Struct(f"{e}IIQQQQIIQQ")
+        rel_type, apply_rel = _SHT_RELA, _apply_elf64_rela
+    else:
+        e_shoff = struct.unpack_from(f"{e}I", elf, 0x20)[0]
+        e_shentsize, e_shnum, e_shstrndx = struct.unpack_from(f"{e}HHH", elf, 0x2E)
+        shdr_struct = struct.Struct(f"{e}IIIIIIIIII")
+        rel_type, apply_rel = _SHT_REL, _apply_elf32_rel
+    # Section header fields: 0=name 1=type 2=flags 3=addr 4=offset 5=size
+    #                        6=link 7=info 8=addralign 9=entsize
+    shdrs = [shdr_struct.unpack_from(elf, e_shoff + i * e_shentsize) for i in range(e_shnum)]
+    strtab_shdr = shdrs[e_shstrndx]
     strtab = elf[strtab_shdr[4]:strtab_shdr[4] + strtab_shdr[5]]
 
-    text_bytes = None
-    text_idx = None
-    for i in range(e_shnum):
-        off = e_shoff + i * e_shentsize
-        name_off = struct.unpack_from(f"{e}I", elf, off)[0]
-        if strtab[name_off:name_off + 6] == b".text\x00":
-            shdr = shdr_struct.unpack_from(elf, off)
+    for text_idx, shdr in enumerate(shdrs):
+        if strtab[shdr[0]:shdr[0] + 6] == b".text\x00":
             text_bytes = bytearray(elf[shdr[4]:shdr[4] + shdr[5]])
-            text_idx = i
             break
-
-    if text_bytes is None:
+    else:
         raise AsmError("no .text section in ELF output")
 
-    # Apply .rel.text relocations (SHT_REL — no explicit addend)
-    for i in range(e_shnum):
-        shdr = shdr_struct.unpack_from(elf, e_shoff + i * e_shentsize)
-        if shdr[1] == _SHT_REL and shdr[7] == text_idx:
-            _apply_elf32_rel(elf, e, shdr, shdr_struct, e_shoff, e_shentsize, text_bytes)
-            break
-
-    return bytes(text_bytes)
-
-
-def _extract_text_elf64(elf: bytes, e: str) -> bytes:
-    e_shoff = struct.unpack_from(f"{e}Q", elf, 0x28)[0]
-    e_shentsize = struct.unpack_from(f"{e}H", elf, 0x3A)[0]
-    e_shnum = struct.unpack_from(f"{e}H", elf, 0x3C)[0]
-    e_shstrndx = struct.unpack_from(f"{e}H", elf, 0x3E)[0]
-    shdr_struct = struct.Struct(f"{e}IIQQQQIIQQ")
-
-    # Find section name string table
-    strtab_shdr = shdr_struct.unpack_from(elf, e_shoff + e_shstrndx * e_shentsize)
-    strtab = elf[strtab_shdr[4]:strtab_shdr[4] + strtab_shdr[5]]
-
-    # Locate .text section and its index
-    text_bytes = None
-    text_idx = None
-    for i in range(e_shnum):
-        off = e_shoff + i * e_shentsize
-        name_off = struct.unpack_from(f"{e}I", elf, off)[0]
-        if strtab[name_off:name_off + 6] == b".text\x00":
-            shdr = shdr_struct.unpack_from(elf, off)
-            text_bytes = bytearray(elf[shdr[4]:shdr[4] + shdr[5]])
-            text_idx = i
-            break
-
-    if text_bytes is None:
-        raise AsmError("no .text section in ELF output")
-
-    # Apply relocations from .rela.text if present
-    for i in range(e_shnum):
-        shdr = shdr_struct.unpack_from(elf, e_shoff + i * e_shentsize)
-        # sh_type == SHT_RELA and sh_info == .text section index
-        if shdr[1] == _SHT_RELA and shdr[7] == text_idx:
-            _apply_elf64_rela(elf, e, shdr, shdr_struct, e_shoff, e_shentsize, text_bytes)
+    # Apply relocations targeting .text (sh_info == .text index), if present
+    for shdr in shdrs:
+        if shdr[1] == rel_type and shdr[7] == text_idx:
+            apply_rel(elf, e, shdr, shdr_struct, e_shoff, e_shentsize, text_bytes)
             break
 
     return bytes(text_bytes)
@@ -217,17 +172,6 @@ def _apply_elf32_rel(elf, e, rel_shdr, shdr_struct, e_shoff, e_shentsize, text):
             value = (st_value + implicit_addend - r_offset) & 0xFFFFFFFF
             struct.pack_into("<I", text, r_offset, value)
 
-
-def _find_text(elf, e_shoff, e_shentsize, e_shnum, e_shstrndx, shdr_struct, off_idx, size_idx, e):
-    strtab_shdr = shdr_struct.unpack_from(elf, e_shoff + e_shstrndx * e_shentsize)
-    strtab_data = elf[strtab_shdr[off_idx] : strtab_shdr[off_idx] + strtab_shdr[size_idx]]
-    for i in range(e_shnum):
-        off = e_shoff + i * e_shentsize
-        name_off = struct.unpack_from(f"{e}I", elf, off)[0]
-        if strtab_data[name_off : name_off + 6] == b".text\x00":
-            shdr = shdr_struct.unpack_from(elf, off)
-            return elf[shdr[off_idx] : shdr[off_idx] + shdr[size_idx]]
-    raise AsmError("no .text section in ELF output")
 
 
 # -- Mach-O ----------------------------------------------------------------
