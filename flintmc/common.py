@@ -21,13 +21,16 @@ def _split_semicolons(source: str) -> str:
         if ";" not in line and "/*" not in line and "*/" not in line:
             out.append(line)
             continue
-        start, in_quote, i, n = 0, False, 0, len(line)
+        start, quote, i, n = 0, "", 0, len(line)
         while i < n:
             ch = line[i]
             if in_block_comment:
                 if ch == "*" and i + 1 < n and line[i + 1] == "/": in_block_comment, i = False, i + 1
-            elif ch in ('"', "'"): in_quote = not in_quote
-            elif not in_quote:
+            elif quote:
+                if ch == "\\": i += 1  # skip escaped char
+                elif ch == quote: quote = ""
+            elif ch in ('"', "'"): quote = ch
+            else:
                 if ch == "/" and i + 1 < n and line[i + 1] == "*": in_block_comment, i = True, i + 1
                 elif ch == ";": out.append(line[start:i]); start = i + 1
                 # @  -> ARM line comment (always)
@@ -39,6 +42,22 @@ def _split_semicolons(source: str) -> str:
             i += 1
         out.append(line[start:])
     return "\n".join(out)
+
+# Triple components that select a non-ELF object format (Mach-O / COFF).
+_NON_ELF = ("apple", "darwin", "macos", "ios", "tvos", "watchos", "macho",
+            "windows", "win32", "msvc", "mingw", "cygwin", "coff")
+
+def _elf_triple(triple: str) -> str:
+    """Rewrite a Mach-O/COFF triple to ELF, keeping the arch.
+
+    Mach-O leaves branches to local labels as unapplied relocations
+    (``jmp end`` -> ``e9 00000000``), so everything is assembled as ELF.
+    Machine code is identical; only the container differs.
+    """
+    arch, *rest = triple.split("-")
+    if any(p.lower().startswith(_NON_ELF) for p in rest):
+        return f"{arch}-unknown-none-elf"
+    return triple
 
 _PREAMBLE_OVERRIDES: dict[str, str] = {}
 
