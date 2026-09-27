@@ -5,6 +5,10 @@
 - `Disassembler` has every `Assembler` profile (`cortex_m0/m4/m7_sp/m33`, `armv6m/7m/8m`, `loongarch64`, `avr`, `bpf`, `msp430`, `i686` alias). Both read one shared table, so settings can't drift.
 - Profile methods accept `cpu=`/`features=` overrides (previously a `TypeError`).
 - `asm_each()` accepts `address=` and `symbols=`, like `asm()`.
+- `address=` accepts any 64-bit value (was capped at 1 MiB). STM32-style `0x08000000` now takes milliseconds instead of ~0.6 s and 400 MB.
+- Undefined symbols raise `AsmError` instead of assembling to garbage (`call prinft` was a call to 0; AArch64 `bl prinft` a branch to itself).
+- AArch64 `adrp`/`:lo12:` pairs and branches/`adr`/`ldr` to `.global` labels are resolved (were left zeroed). Absolute references to labels (`movabs $label`, AArch64/RISC-V `ldr =label`) hold the label's address (were 0). Other relocations LLVM leaves in `.text` raise instead of shipping an unpatched field.
+- Docs: branches to `symbols=` values are absolute on x86 but a displacement from the instruction on ARM/AArch64/RISC-V (previously documented as "offset from block start").
 
 ## 0.3.0
 

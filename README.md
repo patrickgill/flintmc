@@ -52,11 +52,14 @@ for instr in dis(b'\x48\x89\xd8\xc3'):
 asm = Assembler.cortex_m7_dp()
 
 # External symbols are injected as .set directives
-asm("bl handler", symbols={"handler": 0x80})
+asm("ldr r0, =hook", symbols={"hook": 0x2000_1000})   # literal pool holds 0x20001000
 
-# Base address for PC-relative instructions
-asm("adr r0, label", address=0x1000, symbols={"label": 0x1040})
+# Base address (any 64-bit value): absolute references to labels, AArch64
+# adrp pages, alignment and x86 branches to symbols use it
+asm("ldr r0, =table; bx lr; table: .word 1", address=0x0800_0000)  # literal = 0x08000004
 ```
+
+Branches to a symbol value differ by architecture. On x86 (AT&T syntax, `preamble=""`) the value is an absolute target and `address` is honored. On ARM, AArch64 and RISC-V, LLVM encodes the value as the displacement from the branch instruction and ignores `address`. Misspelled or undefined symbols raise `AsmError`.
 
 ### Per-instruction info
 

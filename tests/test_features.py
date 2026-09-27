@@ -450,8 +450,32 @@ class TestAddress:
 
     def test_too_large_address_raises(self):
         asm = Assembler.x86_64()
-        with pytest.raises(ValueError, match="exceeds maximum"):
-            asm("nop", address=0x20_0000)
+        with pytest.raises(ValueError, match="below 2\\*\\*64"):
+            asm("nop", address=2**64)
+
+    def test_large_address_aarch64_adrp(self):
+        from flintmc import Disassembler
+        # t sits at 0x0800_0800 + 0x1ff8 = 0x0800_27f8 -> page delta 0x2000, lo12 0x7f8
+        code = Assembler.aarch64().asm("adrp x0, t; ldr x1, [x0, :lo12:t]; .space 0x1ff0; t: .quad 1",
+                                       address=0x0800_0800)
+        adrp, ldr = (i.text.replace("\t", " ") for i in Disassembler.aarch64()(code[:8]))
+        assert (adrp, ldr) == ("adrp x0, #8192", "ldr x1, [x0, #0x7f8]")
+
+    def test_large_address_values(self):
+        asm = Assembler("x86_64", preamble="")
+        code = asm("call h", symbols={"h": 0x0800_0100}, address=0x0800_0000)
+        assert code == b"\xe8" + (0x100 - 5).to_bytes(4, "little")
+        code = asm("movabsq $l, %rax; l: ret", address=0xFFFF_0000_1234)
+        assert code[2:10] == (0xFFFF_0000_1234 + 10).to_bytes(8, "little")
+        code = asm("nop; .p2align 4; ret", address=0x0800_1001)
+        assert len(code) == 16  # 1 nop + pad to 0x08001010 + ret
+
+    def test_large_address_is_fast(self):
+        import time
+        asm = Assembler.cortex_m4()
+        t = time.perf_counter()
+        asm("bl h; ldr r0, =h", symbols={"h": 0x0800_0100}, address=0x0800_0000)
+        assert time.perf_counter() - t < 0.2  # was ~0.6 s and 400 MB via full .org
 
     def test_via_call(self):
         asm = Assembler.x86_64()

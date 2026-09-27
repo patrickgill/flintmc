@@ -378,19 +378,13 @@ class Assembler:
             )
         return self._local.subprocess.asm(source, header_lines)
 
-    _MAX_ADDRESS = 0x10_0000  # 1 MiB — keeps .org padding reasonable
     _SYMBOL_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_.$]*$")
 
     @classmethod
     def _check_address(cls, address: int | None) -> int:
         address = address or 0
-        if address < 0:
-            raise ValueError("address must be non-negative")
-        if address > cls._MAX_ADDRESS:
-            raise ValueError(
-                f"address 0x{address:x} exceeds maximum 0x{cls._MAX_ADDRESS:x}. "
-                "Use .org directly for larger addresses."
-            )
+        if not 0 <= address < 2**64:
+            raise ValueError(f"address must be non-negative and below 2**64, got {address:#x}")
         return address
 
     @staticmethod
@@ -434,7 +428,7 @@ class Assembler:
         address:
             Base address (PC) for the assembled code.  Position-relative
             instructions (``adr``, RIP-relative, etc.) are calculated as
-            if the code were placed at this address.  Max 1 MiB.
+            if the code were placed at this address.  Any 64-bit value.
         symbols:
             Mapping of symbol names to integer values.  Injected as
             ``.set`` directives before the source.
@@ -444,11 +438,20 @@ class Assembler:
 
                 asm("ldr r0, =hook", symbols={"hook": 0x2000_1000})
 
-            For branch instructions (``bl``, ``b``, ``jal``, etc.) the
-            value is treated as a **byte offset from the start of the
-            assembled block** — NOT an absolute address::
+            Branches to a symbol differ by architecture:
 
-                asm("bl handler", symbols={"handler": 0x80})
+            - **x86** (AT&T syntax): the value is an absolute target and
+              ``address`` is honored.  LLVM's Intel parser rejects
+              ``jmp``/``call`` to an absolute symbol; use ``preamble=""``.
+            - **ARM, AArch64, RISC-V**: LLVM encodes the value as the
+              displacement from the branch instruction itself, ignoring
+              ``address``::
+
+                  asm("nop; bl handler", symbols={"handler": 0x80})  # bl #0x80 at offset 2
+
+            PC-relative address formation (``adr``, ``ldr r0, sym``) to a
+            symbol value is unreliable on Thumb; use ``ldr r0, =sym`` or a
+            label defined in the source instead.
 
             Symbol names must match ``[A-Za-z_.][A-Za-z0-9_.$]*``.
         verify:
@@ -529,14 +532,17 @@ class Assembler:
         parts = [self.preamble] if self.preamble else []
         if symbols:
             parts.append(self._symbol_directives(symbols))
-        if address:
-            parts.append(f".org {address}")
+        # Only the low 16 bits go through .org (so alignment directives see the
+        # real address); the rest is applied as the relocation base, no padding.
+        org = address & 0xFFFF
+        if org:
+            parts.append(f".org {org}")
         # Lines injected before user source, for error line-number adjustment
         header_lines = sum(p.count("\n") + 1 for p in parts)
         parts.append(_split_semicolons(source))
 
-        code = _extract_text(self._run("\n".join(parts) + "\n", header_lines))
-        return code[address:]
+        obj = self._run("\n".join(parts) + "\n", header_lines)
+        return _extract_text(obj, base=address - org)[org:]
 
     def asm_each(self, source: str, *, address: int | None = None, symbols: dict[str, int] | None = None) -> list[InstructionInfo]:
         """Assemble and return per-instruction boundaries.

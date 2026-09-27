@@ -9,7 +9,7 @@
 | **LLVM** | System LLVM (7.0+) | Requires LLVM 15-18 | Frozen fork (~3.x) |
 | **Disassembly** | Yes | Yes | No (uses Capstone) |
 | **Symbol injection** | Yes (`.set` + relocation patching) | Yes (native MCSymbol) | No |
-| **Base address** | Yes (`.org`, max 1 MiB) | Yes (native, unlimited) | No |
+| **Base address** | Yes (any 64-bit value) | Yes (native, unlimited) | No |
 | **Per-instruction info** | Yes (`asm_each()`) | Yes | Count only |
 | **Round-trip verify** | Yes (`verify=True`) | No | No |
 | **Concurrency** | True parallel (TLS) | Global lock | Global lock |
@@ -34,7 +34,7 @@
 Nyxstone resolves symbols by injecting them into LLVM's `MCSymbol` table. This works uniformly across all architectures and instruction types. flintmc uses `.set` directives + relocation patching, which works for all practical cases on ELF targets but has a known LLVM crash on Windows COFF targets for branch instructions.
 
 ### Unlimited base address
-Nyxstone sets the assembly origin by configuring `MCAssembler` directly. flintmc uses `.org` which pads the object file — capped at 1 MiB to avoid excessive memory use.
+Nyxstone sets the assembly origin by configuring `MCAssembler` directly. flintmc applies the address as the base when resolving relocations, with a `.org` of at most 64 KiB to keep alignment correct.
 
 ### Direct MC layer access
 Nyxstone can access internal LLVM optimizations and flags not exposed in the C API. This allows exotic encoding control that flintmc cannot replicate.
@@ -66,5 +66,5 @@ Thousands of community plugins, debugger integrations (OllyDbg, x64dbg), and ext
 ## Known limitations
 
 - **x86 Intel-syntax symbol branches**: LLVM's Intel parser rejects `jmp`/`call` to an absolute `.set` symbol (`invalid operand`). Use AT&T syntax (`preamble=""`) for symbol branches on x86.
-- **Base address limit**: `.org` approach caps at 1 MiB. Use `.org` directly in the source for larger addresses, or compute section-relative offsets in the `symbols` dict.
+- **Symbol branches outside x86**: on ARM, AArch64 and RISC-V, LLVM encodes a branch to a `symbols=` value as a displacement from the instruction and ignores `address=`. Thumb `adr`/`ldr` to a symbol value is unreliable; use `ldr r0, =sym`.
 - **WebAssembly**: LLVM emits wasm binary format, not ELF/Mach-O/COFF. Not supported.
