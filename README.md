@@ -300,3 +300,7 @@ uv run pytest tests/test_thumb2_vs_gas.py           # GAS ground-truth (needs ar
 
 - Python >= 3.10
 - LLVM 7.0+ (`libLLVM` shared library + `llvm-mc` binary)
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
