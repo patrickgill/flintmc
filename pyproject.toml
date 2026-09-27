@@ -1,7 +1,7 @@
 [project]
 name = "flintmc"
-version = "0.2.0"
-description = "LLVM-backed multi-architecture assembler for Python"
+version = "0.3.0"
+description = "LLVM-backed multi-architecture assembler and disassembler for Python >=3.10"
 requires-python = ">=3.10"
 dependencies = []
 
@@ -12,8 +12,9 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
+    "pdoc>=16.0.0",
     "pytest>=9.0.2",
 ]
 compat = [
