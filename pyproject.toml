@@ -3,6 +3,9 @@ name = "flintmc"
 version = "0.3.0"
 description = "LLVM-backed multi-architecture assembler and disassembler for Python >=3.10"
 requires-python = ">=3.10"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = []
 
 [build-system]
