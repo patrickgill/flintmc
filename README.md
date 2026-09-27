@@ -163,7 +163,7 @@ Assembler(triple, *, cpu="", features="", preamble=None, backend=None)
 ```
 
 - **`asm(source, *, address=None, symbols=None, verify=False)`** — assemble to bytes
-- **`asm_each(source)`** — assemble and return a list of `InstructionInfo(offset, size, code, source)`
+- **`asm_each(source, *, address=None, symbols=None)`** — assemble and return a list of `InstructionInfo(offset, size, code, source)`
 - **`close()`** — release backend resources for the calling thread
 - Callable: `asm("nop")` is the same as `asm.asm("nop")`
 
@@ -242,6 +242,8 @@ Assembler.bpf()                # eBPF
 Assembler.msp430()             # TI MSP430 (16-bit)
 Assembler.loongarch64()        # LoongArch 64-bit
 ```
+
+`Disassembler` has the same profiles with the same settings (`Disassembler.cortex_m4()`, ...). Any profile accepts `cpu=` / `features=` to override its defaults.
 
 ### Error handling
 

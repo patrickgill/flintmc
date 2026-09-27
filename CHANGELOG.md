@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `Disassembler` has every `Assembler` profile (`cortex_m0/m4/m7_sp/m33`, `armv6m/7m/8m`, `loongarch64`, `avr`, `bpf`, `msp430`, `i686` alias). Both read one shared table, so settings can't drift.
+- Profile methods accept `cpu=`/`features=` overrides (previously a `TypeError`).
+- `asm_each()` accepts `address=` and `symbols=`, like `asm()`.
+
 ## 0.3.0
 
 ### New features
