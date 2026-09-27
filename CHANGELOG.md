@@ -27,6 +27,17 @@
 - `_split_semicolons`: tracks single quotes, treats `#42` and `#(expr)` as immediates (not comments).
 - Linux `libLLVM` discovery: tighter glob, catches `RuntimeError` from component libraries.
 - `set_libllvm_path()` invalidates cached backend detection.
+- Error line numbers are now correct when `symbols=` or `address=` is used.
+- `_split_semicolons`: tracks which quote character opened a string, and backslash escapes (`.ascii "it's; ok"` no longer splits).
+- `Disassembler`: `arm64-*` triples skip undecodable bytes in 4-byte steps (was 2); RISC-V uses 2 (was 1).
+- `Disassembler`: argtypes and disassembler init are redone after `set_libllvm_path()` loads a new library.
+- `Assembler.default_verify` sets the default for `verify=`.
+- Apple and Windows triples are assembled as ELF internally. Mach-O left every branch to a local label unrelocated (`jmp end` -> `e9 00000000`; `cbz`/`adr` errored), and COFF crashed on branches to `.set` symbols.
+- `asm_each()` assembles once with per-line marker labels instead of cumulatively. Forward references and branch relaxation now match `asm()` (previously `jmp end; nop; end: ret` gave a 5-byte `jmp` and dropped `ret`), ARM literal pools are no longer attached to the `ldr`, and it is O(1) assemblies instead of O(n).
+- `verify=True` works with x86 relative branches (checked by decoding) and AT&T syntax, and reports undecodable output as such.
+- `Assembler(backend=...)` rejects unknown names with `ValueError`.
+- `Disassembler` contexts are freed on garbage collection; `Assembler.close()` also closes its verifier.
+- CI: `pytest` moved to the `dev` dependency group, so `uv sync --group dev` installs it.
 
 ### Refactoring
 - Split `common.py` into `errors.py`, `objfile.py`, `common.py`.

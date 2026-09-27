@@ -1,8 +1,11 @@
 # TODO
 
+verify=True tests:
+manually do an asm and disasm() and compare those to the a regular asm() only that has verify=True
+
+
 ## Next up
 
-- [ ] **ELF triple normalization**: Assemble all targets as ELF internally (strip OS/vendor from triple). Eliminates Mach-O/COFF parsing on the hot path, avoids COFF `.set`+`jmp` LLVM crash, and unifies relocation patching.
 - [ ] **Unlimited base address**: For x86 (where relocations exist), skip `.org` and apply `base` in the relocation formula directly. Removes the 1 MiB limit for x86 targets.
 - [ ] **Cortex-M expansion**: `Assembler.cortex_m23()`, `Assembler.cortex_m55()`.
 - [ ] **Cortex-A profiles**: `Assembler.armv7a()`, `Assembler.armv8a()`.
@@ -20,6 +23,7 @@
 
 ## Done
 
+- [x] **ELF triple normalization**: Apple/Windows triples assembled as ELF (`_elf_triple`). Fixes Mach-O local-label branches and the COFF `.set`+`jmp` crash.
 - [x] **Disassembler**: `Disassembler` class with `LLVMDisasmInstruction` C API.
 - [x] **Symbol injection**: `symbols={}` parameter with `.set` directives and name validation.
 - [x] **ELF relocation patching**: `R_X86_64_PC32`, `R_X86_64_PLT32` (ELF64), `R_386_PC32` (ELF32).
