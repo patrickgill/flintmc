@@ -26,8 +26,9 @@ from .llvm_subprocess import (
     LlvmSubprocessBackend,
     find_llvm_mc,
 )
+from .binutils import BinutilsBackend, find_tool
 
-BackendType = Literal["capi", "subprocess"]
+BackendType = Literal["capi", "subprocess", "binutils"]
 
 # x86 relative branches: LLVM prints the raw displacement ("jmp -3"),
 # which doesn't reassemble to the same bytes in either syntax.
@@ -79,7 +80,9 @@ class Assembler:
         Assembly backend: ``None`` (default) auto-detects — uses the
         LLVM C API if libLLVM is available (65x faster), otherwise
         falls back to llvm-mc subprocess.  Force with ``"capi"`` or
-        ``"subprocess"``.
+        ``"subprocess"``.  Triples LLVM has no target for (e.g. ``v850``)
+        use ``"binutils"``: GNU ``<arch>-elf-as`` from ``$BINUTILS_PATH/bin``
+        or ``PATH``.
     """
 
     default_backend: Optional[BackendType] = None
@@ -162,8 +165,10 @@ class Assembler:
         # 1. Use explicit backend if passed to constructor
         # 2. Use global default (e.g. from pytest --backend)
         # 3. Auto-detect (C API preferred)
-        if backend not in (None, "capi", "subprocess"):
-            raise ValueError(f"backend must be 'capi' or 'subprocess', got {backend!r}")
+        if backend not in (None, "capi", "subprocess", "binutils"):
+            raise ValueError(f"backend must be 'capi', 'subprocess' or 'binutils', got {backend!r}")
+        if backend is None and _arch_for_triple(triple) is None and find_tool(triple, "as"):
+            backend = "binutils"
         if backend == "capi" and not self.capi_available():
             raise RuntimeError("C API backend requested but libLLVM not found")
         self.backend = backend or self.resolve_backend()
@@ -345,6 +350,23 @@ class Assembler:
         """TI MSP430 (ultra-low-power 16-bit MCU)."""
         return _preset(cls, "msp430", kw)
 
+    # -- GNU binutils targets (no LLVM backend) ----------------------------
+
+    @classmethod
+    def v850(cls, **kw: Any) -> "Assembler":
+        """Renesas V850 (base ISA). Needs ``v850-elf-as``."""
+        return _preset(cls, "v850", kw)
+
+    @classmethod
+    def v850es(cls, **kw: Any) -> "Assembler":
+        """Renesas V850ES (V850E1 ISA). Needs ``v850-elf-as``."""
+        return _preset(cls, "v850es", kw)
+
+    @classmethod
+    def v850e1(cls, **kw: Any) -> "Assembler":
+        """Renesas V850E1. Needs ``v850-elf-as``."""
+        return _preset(cls, "v850e1", kw)
+
     # -- Core assembly -----------------------------------------------------
 
     def _run(self, source: str, header_lines: int) -> bytes:
@@ -353,6 +375,10 @@ class Assembler:
             return self._run_capi(source, header_lines)
         if self.backend == "subprocess":
             return self._run_subprocess(source, header_lines)
+        if self.backend == "binutils":
+            if not hasattr(self._local, "binutils"):
+                self._local.binutils = BinutilsBackend(self._obj_triple, self.cpu, self.features)
+            return self._local.binutils.asm(source, header_lines)
 
         raise AsmError(f"Unknown backend: {self.backend}")
 

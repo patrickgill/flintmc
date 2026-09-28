@@ -6,6 +6,7 @@ repr, thread safety, edge cases.
 
 import pytest
 from flintmc import Assembler, Disassembler, AsmError, DisasmInstruction
+from flintmc.binutils import find_tool
 
 
 @pytest.mark.skipif(not Assembler.capi_available(), reason="C API not available")
@@ -482,6 +483,7 @@ PROFILE_SAMPLES = {
     "cortex_m7_dp": "vadd.f64 d0, d1, d2", "cortex_m33": "vadd.f32 s0, s1, s2",
     "x86_64": "ret", "x86_32": "ret", "aarch64": "ret", "riscv64": "ret", "riscv32": "ret",
     "loongarch64": "ret", "avr": "ret", "bpf": "exit", "msp430": "ret",
+    "v850": "nop", "v850es": "nop", "v850e1": "nop",
 }
 
 
@@ -491,6 +493,8 @@ def test_profile_parity_and_round_trip(name):
     """Every Assembler profile has a Disassembler twin with identical settings."""
     from flintmc.common import _PROFILES
     assert set(PROFILE_SAMPLES) == set(_PROFILES)
+    if name.startswith("v850") and not find_tool("v850-elf", "as"):
+        pytest.skip("v850-elf binutils not found")
     asm, dis = getattr(Assembler, name)(), getattr(Disassembler, name)()
     assert (asm.triple, asm.cpu, asm.features) == (dis.triple, dis.cpu, dis.features)
     code = asm(PROFILE_SAMPLES[name])

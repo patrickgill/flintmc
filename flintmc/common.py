@@ -2,7 +2,7 @@
 
 import re
 
-_STDIN_LINE_RE = re.compile(r"<(?:stdin|inline asm)>:(\d+):")
+_STDIN_LINE_RE = re.compile(r"(?:<(?:stdin|inline asm)>|\{standard input\}):(\d+):")
 
 def _fix_error(stderr: str, preamble_lines: int) -> str:
     lines = []
@@ -62,6 +62,10 @@ _PROFILES: dict[str, tuple[str, str, str]] = {
     "avr": ("avr", "avr5", ""),
     "bpf": ("bpf", "", ""),
     "msp430": ("msp430", "", ""),
+    # GNU binutils backend (no LLVM target); cpu is the gas -m flag / objdump -m machine
+    "v850": ("v850-elf", "v850", ""),
+    "v850es": ("v850-elf", "v850e1", ""),  # V850ES uses the V850E1 ISA
+    "v850e1": ("v850-elf", "v850e1", ""),
 }
 
 def _preset(cls, name, kw):

@@ -13,6 +13,7 @@ from typing import Any
 
 from .errors import AsmError, UnsupportedArchitectureError
 from .common import _preset
+from . import binutils
 from .llvm_capi import (
     _load_llvm,
     _init_target,
@@ -132,6 +133,14 @@ class Disassembler:
         features: str = "",
         intel: bool = True,
     ) -> None:
+        self.triple = triple
+        self.cpu = cpu
+        self.features = features
+        # No LLVM target (e.g. V850): decode with GNU objdump instead
+        self._objdump = binutils.find_tool(triple, "objdump") if _arch_for_triple(triple) is None else None
+        if self._objdump:
+            return
+
         lib = _load_llvm()
         if lib is None:
             raise RuntimeError(
@@ -150,9 +159,6 @@ class Disassembler:
         _init_disasm(lib, arch)
 
         self._lib = lib
-        self.triple = triple
-        self.cpu = cpu
-        self.features = features
         self._local = threading.local()
         self._intel = intel
 
@@ -220,6 +226,8 @@ class Disassembler:
         AsmError
             If *strict* is True and a byte cannot be decoded.
         """
+        if self._objdump:
+            return self._disasm_objdump(code, address, count, strict)
         ctx = self._get_ctx()
         lib = self._lib
 
@@ -258,13 +266,28 @@ class Disassembler:
 
         return results
 
+    def _disasm_objdump(self, code: bytes, address: int, count: int, strict: bool) -> list[DisasmInstruction]:
+        mach = self.cpu or self.triple.split("-")[0]
+        results = []
+        ext = "-mextension" in self.features.split(",")  # same flag the Assembler passes to gas
+        for off, raw, text in binutils.disasm(self._objdump, mach, code, address, ext):
+            # objdump shows undecodable bytes as data directives or "(bad)"
+            if text.startswith((".", "(bad)")):
+                if strict:
+                    raise AsmError(f"Cannot disassemble at offset {off}: 0x{raw[0]:02x}")
+                continue
+            results.append(DisasmInstruction(offset=off, size=len(raw), code=raw, text=text, address=address + off))
+            if count and len(results) >= count:
+                break
+        return results
+
     def close(self) -> None:
         """Release disassembler resources for the calling thread.
 
         Safe to call multiple times.  After ``close()``, the disassembler
         can still be used — a fresh context is created on the next call.
         """
-        if hasattr(self._local, "ctx"):
+        if not self._objdump and hasattr(self._local, "ctx"):
             self._local.finalizer()
             del self._local.ctx, self._local.finalizer
 
@@ -382,3 +405,18 @@ class Disassembler:
     def msp430(cls, **kw: Any) -> "Disassembler":
         """TI MSP430."""
         return _preset(cls, "msp430", kw)
+
+    @classmethod
+    def v850(cls, **kw: Any) -> "Disassembler":
+        """Renesas V850 (base ISA). Needs ``v850-elf-objdump``."""
+        return _preset(cls, "v850", kw)
+
+    @classmethod
+    def v850es(cls, **kw: Any) -> "Disassembler":
+        """Renesas V850ES (V850E1 ISA). Needs ``v850-elf-objdump``."""
+        return _preset(cls, "v850es", kw)
+
+    @classmethod
+    def v850e1(cls, **kw: Any) -> "Disassembler":
+        """Renesas V850E1. Needs ``v850-elf-objdump``."""
+        return _preset(cls, "v850e1", kw)

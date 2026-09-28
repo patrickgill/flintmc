@@ -244,6 +244,11 @@ Assembler.avr()                # Atmel AVR (8-bit)
 Assembler.bpf()                # eBPF
 Assembler.msp430()             # TI MSP430 (16-bit)
 Assembler.loongarch64()        # LoongArch 64-bit
+
+# Renesas V850 — GNU binutils backend (needs v850-elf-as / v850-elf-objdump)
+Assembler.v850()               # V850
+Assembler.v850es()             # V850ES (V850E1 ISA)
+Assembler.v850e1()             # V850E1
 ```
 
 `Disassembler` has the same profiles with the same settings (`Disassembler.cortex_m4()`, ...). Any profile accepts `cpu=` / `features=` to override its defaults.
@@ -265,7 +270,9 @@ except AsmError as e:
 
 **Subprocess (fallback):** If `libLLVM` isn't found, falls back to piping through `llvm-mc -filetype=obj -o -`.
 
-Force a backend with `backend="capi"` or `backend="subprocess"`.
+**GNU binutils (non-LLVM targets):** Triples LLVM has no target for (V850) use `<arch>-elf-as` and `<arch>-elf-objdump`, looked up in `$BINUTILS_PATH/bin` and then on `PATH`. The profile's `cpu` becomes the `-m` flag for `as` and `objdump`, and `features` are passed to `as` as extra comma-separated flags. V850 disassembly is rewritten so it reassembles: branch operands are displacements (like LLVM targets), not objdump's absolute targets. The optional divide/MAC extension ops count as undecodable unless `features="-mextension"`, the same flag `as` needs to accept them. Homebrew has no V850 formula, so build binutils with `--target=v850-elf`.
+
+Force a backend with `backend="capi"`, `"subprocess"` or `"binutils"`.
 
 ## LLVM compatibility
 
