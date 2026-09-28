@@ -6,7 +6,7 @@ manually do an asm and disasm() and compare those to the a regular asm() only th
 
 ## Next up
 
-- [ ] **Unlimited base address**: For x86 (where relocations exist), skip `.org` and apply `base` in the relocation formula directly. Removes the 1 MiB limit for x86 targets.
+- [ ] **Uniform symbol branches**: make branches to `symbols=` values absolute on every arch (define them relative to a start-of-block label?), without breaking their use as immediates.
 - [ ] **Cortex-M expansion**: `Assembler.cortex_m23()`, `Assembler.cortex_m55()`.
 - [ ] **Cortex-A profiles**: `Assembler.armv7a()`, `Assembler.armv8a()`.
 - [ ] **Add verify=True to applicable tests**: Opt in to round-trip verification across the test suite.
@@ -27,7 +27,8 @@ manually do an asm and disasm() and compare those to the a regular asm() only th
 - [x] **Disassembler**: `Disassembler` class with `LLVMDisasmInstruction` C API.
 - [x] **Symbol injection**: `symbols={}` parameter with `.set` directives and name validation.
 - [x] **ELF relocation patching**: `R_X86_64_PC32`, `R_X86_64_PLT32` (ELF64), `R_386_PC32` (ELF32).
-- [x] **Base address**: `address=` parameter via `.org` (max 1 MiB).
+- [x] **Base address**: `address=` any 64-bit value (relocation base + low-16-bit `.org`).
+- [x] **Relocation patcher**: undefined symbols and unknown relocations raise; AArch64 adrp/lo12/branch, absolute data relocations applied.
 - [x] **Per-instruction info**: `asm_each()` with `InstructionInfo`.
 - [x] **Round-trip verification**: `verify=True`.
 - [x] **Mach-O support**: 32/64-bit `__text` extraction.

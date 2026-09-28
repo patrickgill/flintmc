@@ -85,14 +85,17 @@ Both big-endian and little-endian ELF are supported (detected via `EI_DATA` byte
 
 ### ELF Relocation Patching
 
-When LLVM emits branch instructions (x86 `jmp`/`call`) to `.set` symbols, it generates relocation entries instead of encoding the offset inline. `flintmc` parses these and applies them:
+LLVM leaves relocations in `.text` whenever a value depends on where the code is loaded: x86 branches to `.set` symbols, AArch64 `adrp`/`:lo12:` pairs, references to `.global` labels, and absolute references to labels (`ldr r0, =label`, `movabs $label`). `objfile._apply_relocs` resolves them as if `.text` were loaded at a base address (`extract_text(obj, base)`), reading both `.rel.text` (implicit addend) and `.rela.text`:
 
-- **ELF64**: `.rela.text` (explicit addend) — `R_X86_64_PC32`, `R_X86_64_PLT32`
-- **ELF32**: `.rel.text` (implicit addend) — `R_386_PC32`
+| Kind | Types | Value |
+| :--- | :--- | :--- |
+| `pc32` | `R_X86_64_PC32/PLT32`, `R_386_PC32` | `S + A - P` |
+| `abs32`/`abs64` | x86-64 `64/32/32S`, i386/ARM `32`, AArch64 `ABS32/64`, RISC-V `32/64` | `S + A` |
+| `a64` | AArch64 `ADR_PREL_PG_HI21`, `ADR_PREL_LO21`, `*_LO12_NC`, `CONDBR19`, `TSTBR14`, `LD_PREL_LO19`, `JUMP26`, `CALL26` | inserted into the instruction's immediate field |
 
-Formula: `*(int32*)(code + r_offset) = S + A - P` where S = symbol value, A = addend, P = r_offset.
+S is the symbol value (absolute for `.set` symbols, `base + st_value` for labels in `.text`) and P is `base + r_offset`. An undefined symbol raises `AsmError("undefined symbol: …")`, and so does any relocation type not listed (RISC-V relaxation hints are ignored), so an unpatched field is never returned.
 
-AArch64, ARM, and RISC-V typically resolve `.set` symbols inline without generating relocations.
+`address=` puts only its low 16 bits through `.org` (so alignment directives see the real address) and passes the rest as the base, so any 64-bit address costs at most 64 KiB of padding.
 
 ---
 

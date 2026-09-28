@@ -16,7 +16,7 @@ check for them after emit to raise AsmError instead of dying.
 
 CRITICAL: All ctypes .argtypes MUST be declared before calling any
 function. Without them, ctypes truncates 64-bit pointers to 32-bit on
-ARM64 macOS, causing SIGSEGV. See research/llvm-capi-backend.py.
+ARM64 macOS, causing SIGSEGV. (Original prototype: research/ in git history, removed in ba5b304.)
 """
 
 import ctypes

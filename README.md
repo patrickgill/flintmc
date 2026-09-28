@@ -52,11 +52,14 @@ for instr in dis(b'\x48\x89\xd8\xc3'):
 asm = Assembler.cortex_m7_dp()
 
 # External symbols are injected as .set directives
-asm("bl handler", symbols={"handler": 0x80})
+asm("ldr r0, =hook", symbols={"hook": 0x2000_1000})   # literal pool holds 0x20001000
 
-# Base address for PC-relative instructions
-asm("adr r0, label", address=0x1000, symbols={"label": 0x1040})
+# Base address (any 64-bit value): absolute references to labels, AArch64
+# adrp pages, alignment and x86 branches to symbols use it
+asm("ldr r0, =table; bx lr; table: .word 1", address=0x0800_0000)  # literal = 0x08000004
 ```
+
+Branches to a symbol value differ by architecture. On x86 (AT&T syntax, `preamble=""`) the value is an absolute target and `address` is honored. On ARM, AArch64 and RISC-V, LLVM encodes the value as the displacement from the branch instruction and ignores `address`. Misspelled or undefined symbols raise `AsmError`.
 
 ### Per-instruction info
 
@@ -163,7 +166,7 @@ Assembler(triple, *, cpu="", features="", preamble=None, backend=None)
 ```
 
 - **`asm(source, *, address=None, symbols=None, verify=False)`** — assemble to bytes
-- **`asm_each(source)`** — assemble and return a list of `InstructionInfo(offset, size, code, source)`
+- **`asm_each(source, *, address=None, symbols=None)`** — assemble and return a list of `InstructionInfo(offset, size, code, source)`
 - **`close()`** — release backend resources for the calling thread
 - Callable: `asm("nop")` is the same as `asm.asm("nop")`
 
@@ -241,7 +244,14 @@ Assembler.avr()                # Atmel AVR (8-bit)
 Assembler.bpf()                # eBPF
 Assembler.msp430()             # TI MSP430 (16-bit)
 Assembler.loongarch64()        # LoongArch 64-bit
+
+# Renesas V850 — GNU binutils backend (needs v850-elf-as / v850-elf-objdump)
+Assembler.v850()               # V850
+Assembler.v850es()             # V850ES (V850E1 ISA)
+Assembler.v850e1()             # V850E1
 ```
+
+`Disassembler` has the same profiles with the same settings (`Disassembler.cortex_m4()`, ...). Any profile accepts `cpu=` / `features=` to override its defaults.
 
 ### Error handling
 
@@ -260,7 +270,9 @@ except AsmError as e:
 
 **Subprocess (fallback):** If `libLLVM` isn't found, falls back to piping through `llvm-mc -filetype=obj -o -`.
 
-Force a backend with `backend="capi"` or `backend="subprocess"`.
+**GNU binutils (non-LLVM targets):** Triples LLVM has no target for (V850) use `<arch>-elf-as` and `<arch>-elf-objdump`, looked up in `$BINUTILS_PATH/bin` and then on `PATH`. The profile's `cpu` becomes the `-m` flag for `as` and `objdump`, and `features` are passed to `as` as extra comma-separated flags. V850 disassembly is rewritten so it reassembles: branch operands are displacements (like LLVM targets), not objdump's absolute targets. The optional divide/MAC extension ops count as undecodable unless `features="-mextension"`, the same flag `as` needs to accept them. Homebrew has no V850 formula, so build binutils with `--target=v850-elf`.
+
+Force a backend with `backend="capi"`, `"subprocess"` or `"binutils"`.
 
 ## LLVM compatibility
 

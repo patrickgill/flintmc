@@ -12,6 +12,8 @@ import weakref
 from typing import Any
 
 from .errors import AsmError, UnsupportedArchitectureError
+from .common import _preset
+from . import binutils
 from .llvm_capi import (
     _load_llvm,
     _init_target,
@@ -131,6 +133,14 @@ class Disassembler:
         features: str = "",
         intel: bool = True,
     ) -> None:
+        self.triple = triple
+        self.cpu = cpu
+        self.features = features
+        # No LLVM target (e.g. V850): decode with GNU objdump instead
+        self._objdump = binutils.find_tool(triple, "objdump") if _arch_for_triple(triple) is None else None
+        if self._objdump:
+            return
+
         lib = _load_llvm()
         if lib is None:
             raise RuntimeError(
@@ -149,9 +159,6 @@ class Disassembler:
         _init_disasm(lib, arch)
 
         self._lib = lib
-        self.triple = triple
-        self.cpu = cpu
-        self.features = features
         self._local = threading.local()
         self._intel = intel
 
@@ -219,6 +226,8 @@ class Disassembler:
         AsmError
             If *strict* is True and a byte cannot be decoded.
         """
+        if self._objdump:
+            return self._disasm_objdump(code, address, count, strict)
         ctx = self._get_ctx()
         lib = self._lib
 
@@ -257,13 +266,28 @@ class Disassembler:
 
         return results
 
+    def _disasm_objdump(self, code: bytes, address: int, count: int, strict: bool) -> list[DisasmInstruction]:
+        mach = self.cpu or self.triple.split("-")[0]
+        results = []
+        ext = "-mextension" in self.features.split(",")  # same flag the Assembler passes to gas
+        for off, raw, text in binutils.disasm(self._objdump, mach, code, address, ext):
+            # objdump shows undecodable bytes as data directives or "(bad)"
+            if text.startswith((".", "(bad)")):
+                if strict:
+                    raise AsmError(f"Cannot disassemble at offset {off}: 0x{raw[0]:02x}")
+                continue
+            results.append(DisasmInstruction(offset=off, size=len(raw), code=raw, text=text, address=address + off))
+            if count and len(results) >= count:
+                break
+        return results
+
     def close(self) -> None:
         """Release disassembler resources for the calling thread.
 
         Safe to call multiple times.  After ``close()``, the disassembler
         can still be used — a fresh context is created on the next call.
         """
-        if hasattr(self._local, "ctx"):
+        if not self._objdump and hasattr(self._local, "ctx"):
             self._local.finalizer()
             del self._local.ctx, self._local.finalizer
 
@@ -293,28 +317,106 @@ class Disassembler:
             parts.append(self.cpu)
         return f"Disassembler({', '.join(parts)})"
 
-    # -- Profiles ----------------------------------------------------------
+    # -- Profiles (same names and settings as Assembler) ------------------
 
     @classmethod
-    def x86_64(cls, **kw: Any) -> "Disassembler":
-        return cls("x86_64", **kw)
+    def armv6m(cls, **kw: Any) -> "Disassembler":
+        """ARMv6-M (Cortex-M0/M0+)."""
+        return _preset(cls, "armv6m", kw)
 
     @classmethod
-    def x86_32(cls, **kw: Any) -> "Disassembler":
-        return cls("i686", **kw)
+    def armv7m(cls, **kw: Any) -> "Disassembler":
+        """ARMv7-M, no FPU."""
+        return _preset(cls, "armv7m", kw)
 
     @classmethod
-    def aarch64(cls, **kw: Any) -> "Disassembler":
-        return cls("aarch64", **kw)
+    def armv8m(cls, **kw: Any) -> "Disassembler":
+        """ARMv8-M Mainline, no FPU."""
+        return _preset(cls, "armv8m", kw)
+
+    @classmethod
+    def cortex_m0(cls, **kw: Any) -> "Disassembler":
+        """Cortex-M0/M0+."""
+        return _preset(cls, "cortex_m0", kw)
+
+    @classmethod
+    def cortex_m4(cls, **kw: Any) -> "Disassembler":
+        """Cortex-M4 with FPv4-SP."""
+        return _preset(cls, "cortex_m4", kw)
+
+    @classmethod
+    def cortex_m7_sp(cls, **kw: Any) -> "Disassembler":
+        """Cortex-M7 with FPv5-SP-D16."""
+        return _preset(cls, "cortex_m7_sp", kw)
 
     @classmethod
     def cortex_m7_dp(cls, **kw: Any) -> "Disassembler":
-        return cls("thumbv7em-none-eabi", cpu="cortex-m7", features="+fp-armv8,+fp64", **kw)
+        """Cortex-M7 with FPv5-D16."""
+        return _preset(cls, "cortex_m7_dp", kw)
+
+    @classmethod
+    def cortex_m33(cls, **kw: Any) -> "Disassembler":
+        """Cortex-M33 with FPv5-SP + DSP."""
+        return _preset(cls, "cortex_m33", kw)
+
+    @classmethod
+    def x86_64(cls, **kw: Any) -> "Disassembler":
+        """x86-64 (Intel syntax by default)."""
+        return _preset(cls, "x86_64", kw)
+
+    @classmethod
+    def x86_32(cls, **kw: Any) -> "Disassembler":
+        """x86 32-bit (Intel syntax by default)."""
+        return _preset(cls, "x86_32", kw)
+
+    i686 = x86_32
+
+    @classmethod
+    def aarch64(cls, **kw: Any) -> "Disassembler":
+        """AArch64."""
+        return _preset(cls, "aarch64", kw)
 
     @classmethod
     def riscv64(cls, **kw: Any) -> "Disassembler":
-        return cls("riscv64", cpu="generic-rv64", features="+m,+a,+f,+d", **kw)
+        """RISC-V 64-bit (mafd)."""
+        return _preset(cls, "riscv64", kw)
 
     @classmethod
     def riscv32(cls, **kw: Any) -> "Disassembler":
-        return cls("riscv32", cpu="generic-rv32", features="+m,+a,+f", **kw)
+        """RISC-V 32-bit (maf)."""
+        return _preset(cls, "riscv32", kw)
+
+    @classmethod
+    def loongarch64(cls, **kw: Any) -> "Disassembler":
+        """LoongArch 64-bit."""
+        return _preset(cls, "loongarch64", kw)
+
+    @classmethod
+    def avr(cls, **kw: Any) -> "Disassembler":
+        """Atmel AVR (avr5)."""
+        return _preset(cls, "avr", kw)
+
+    @classmethod
+    def bpf(cls, **kw: Any) -> "Disassembler":
+        """BPF / eBPF."""
+        return _preset(cls, "bpf", kw)
+
+    @classmethod
+    def msp430(cls, **kw: Any) -> "Disassembler":
+        """TI MSP430."""
+        return _preset(cls, "msp430", kw)
+
+    @classmethod
+    def v850(cls, **kw: Any) -> "Disassembler":
+        """Renesas V850 (base ISA). Needs ``v850-elf-objdump``."""
+        return _preset(cls, "v850", kw)
+
+    @classmethod
+    def v850es(cls, **kw: Any) -> "Disassembler":
+        """Renesas V850ES (V850E1 ISA). Needs ``v850-elf-objdump``."""
+        return _preset(cls, "v850es", kw)
+
+    @classmethod
+    def v850e1(cls, **kw: Any) -> "Disassembler":
+        """Renesas V850E1. Needs ``v850-elf-objdump``."""
+        return _preset(cls, "v850e1", kw)
